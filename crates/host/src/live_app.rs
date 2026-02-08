@@ -44,7 +44,8 @@ pub struct LiveApp {
     cursor_x: f32,
     cursor_y: f32,
     cam_pos: Vec3,
-    cam_orientation: Quat,
+    yaw: f32,
+    pitch: f32,
     keys_held: KeysHeld,
     last_cursor_x: f32,
     last_cursor_y: f32,
@@ -54,10 +55,11 @@ pub struct LiveApp {
 impl LiveApp {
     pub fn new() -> Self {
         let cam_pos = Vec3::new(55.0, 45.0, 55.0);
-        // Look toward the center of the sponge
+        // Compute initial yaw/pitch to look toward the sponge center
         let target = Vec3::new(32.0, 32.0, 32.0);
-        let forward = (target - cam_pos).normalize();
-        let cam_orientation = Quat::from_rotation_arc(Vec3::NEG_Z, forward);
+        let delta = target - cam_pos;
+        let yaw = delta.x.atan2(-delta.z);
+        let pitch = (-delta.y / delta.length()).asin();
 
         Self {
             gpu: None,
@@ -70,12 +72,17 @@ impl LiveApp {
             cursor_x: 0.0,
             cursor_y: 0.0,
             cam_pos,
-            cam_orientation,
+            yaw,
+            pitch,
             keys_held: KeysHeld::default(),
             last_cursor_x: 0.0,
             last_cursor_y: 0.0,
             last_frame: Instant::now(),
         }
+    }
+
+    fn cam_orientation(&self) -> Quat {
+        Quat::from_rotation_y(self.yaw) * Quat::from_rotation_x(self.pitch)
     }
 
     fn update_camera(&mut self) {
@@ -98,15 +105,15 @@ impl LiveApp {
         self.last_cursor_y = self.cursor_y;
 
         let sensitivity = 0.003;
+        let half_pi = std::f32::consts::FRAC_PI_2 - 0.01;
 
-        let yaw_delta = Quat::from_rotation_y(-mouse_dx * sensitivity);
-        let pitch_delta = Quat::from_rotation_x(-mouse_dy * sensitivity);
+        self.yaw -= mouse_dx * sensitivity;
+        self.pitch -= mouse_dy * sensitivity;
+        self.pitch = self.pitch.clamp(-half_pi, half_pi);
 
-        self.cam_orientation = yaw_delta * self.cam_orientation * pitch_delta;
-        self.cam_orientation = self.cam_orientation.normalize();
-
-        let forward = self.cam_orientation * Vec3::NEG_Z;
-        let right = self.cam_orientation * Vec3::X;
+        let orientation = self.cam_orientation();
+        let forward = orientation * Vec3::NEG_Z;
+        let right = orientation * Vec3::X;
 
         let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
         let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
@@ -134,11 +141,11 @@ impl LiveApp {
     }
 
     fn cam_dir(&self) -> Vec3 {
-        self.cam_orientation * Vec3::NEG_Z
+        self.cam_orientation() * Vec3::NEG_Z
     }
 
     fn cam_vup(&self) -> Vec3 {
-        self.cam_orientation * Vec3::Y
+        self.cam_orientation() * Vec3::Y
     }
 
     fn is_menger(mut x: u32, mut y: u32, mut z: u32, size: u32) -> bool {
