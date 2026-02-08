@@ -336,3 +336,103 @@ mod tests {
         assert!(!found2, "ray should miss");
     }
 }
+
+#[test]
+fn test_menger_traversal() {
+    use prim::Ray;
+    use prim::Vec3;
+
+    use crate::traverse::VoxelHit;
+    use crate::traverse::trace_octree;
+
+    // First: simple test - single voxel in a depth-6 world
+    {
+        let mut octree = Octree::new(6);
+        octree.set(32, 32, 32, 5);
+        let data = octree.flatten();
+        eprintln!("Simple: {} entries", data.len());
+
+        let ray = Ray::new(Vec3::new(32.5, 32.5, 40.0), Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let mut hit = VoxelHit::default();
+        let found = trace_octree(&data, 6, &ray, 0.001, 1000.0, &mut hit);
+        eprintln!("Simple hit: {found}, t={}, value={}", hit.t, hit.value);
+        assert!(found, "Should hit single voxel in depth-6 world");
+        assert_eq!(hit.value, 5);
+    }
+
+    // Second: small filled cube in depth-6 world
+    {
+        let mut octree = Octree::new(6);
+        for x in 30..34 {
+            for y in 30..34 {
+                for z in 30..34 {
+                    octree.set(x, y, z, 3);
+                }
+            }
+        }
+        let data = octree.flatten();
+        eprintln!("Cube: {} entries", data.len());
+
+        let ray = Ray::new(Vec3::new(32.0, 32.0, 50.0), Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let mut hit = VoxelHit::default();
+        let found = trace_octree(&data, 6, &ray, 0.001, 1000.0, &mut hit);
+        eprintln!("Cube hit: {found}, t={}, value={}", hit.t, hit.value);
+        assert!(found, "Should hit cube in depth-6 world");
+    }
+
+    // Third: menger sponge
+    {
+        fn is_menger(mut x: u32, mut y: u32, mut z: u32, size: u32) -> bool {
+            let mut s = size;
+            while s > 1 {
+                s /= 3;
+                let cx = (x / s) % 3;
+                let cy = (y / s) % 3;
+                let cz = (z / s) % 3;
+                let center_count = u32::from(cx == 1) + u32::from(cy == 1) + u32::from(cz == 1);
+                if center_count >= 2 {
+                    return false;
+                }
+                x %= s;
+                y %= s;
+                z %= s;
+            }
+            true
+        }
+
+        let depth = 6u32;
+        let size = 1u32 << depth;
+        let mut octree = Octree::new(depth);
+        let sponge_size = 27u32;
+        let offset = (size - sponge_size) / 2;
+        for x in 0..sponge_size {
+            for y in 0..sponge_size {
+                for z in 0..sponge_size {
+                    if is_menger(x, y, z, sponge_size) {
+                        octree.set(x + offset, y + offset, z + offset, 3);
+                    }
+                }
+            }
+        }
+
+        // Verify some voxels exist
+        assert_eq!(octree.get(offset, offset, offset), Some(3));
+        assert_eq!(octree.get(offset + 13, offset + 13, offset + 13), None); // center hole
+
+        let data = octree.flatten();
+        eprintln!("Menger: {} entries", data.len());
+
+        // Ray straight at a known-filled corner
+        let tx = (offset as f32) + 0.5;
+        let ty = (offset as f32) + 0.5;
+        let tz = (offset as f32) + 0.5;
+        let ray = Ray::new(Vec3::new(tx, ty, tz + 20.0), Vec3::new(0.0, 0.0, -1.0), 0.0);
+        let mut hit = VoxelHit::default();
+        let found = trace_octree(&data, depth, &ray, 0.001, 1000.0, &mut hit);
+        eprintln!(
+            "Menger corner hit: {found}, t={}, value={}, pos={:?}",
+            hit.t, hit.value, hit.pos
+        );
+        assert!(found, "Ray should hit Menger sponge corner");
+    }
+}

@@ -53,9 +53,11 @@ pub struct LiveApp {
 
 impl LiveApp {
     pub fn new() -> Self {
-        let cam_pos = Vec3::new(32.0, 10.0, 45.0);
-        let pitch = -0.3f32;
-        let cam_orientation = Quat::from_rotation_x(pitch);
+        let cam_pos = Vec3::new(55.0, 45.0, 55.0);
+        // Look toward the center of the sponge
+        let target = Vec3::new(32.0, 32.0, 32.0);
+        let forward = (target - cam_pos).normalize();
+        let cam_orientation = Quat::from_rotation_arc(Vec3::NEG_Z, forward);
 
         Self {
             gpu: None,
@@ -139,39 +141,41 @@ impl LiveApp {
         self.cam_orientation * Vec3::Y
     }
 
+    fn is_menger(mut x: u32, mut y: u32, mut z: u32, size: u32) -> bool {
+        let mut s = size;
+        while s > 1 {
+            s /= 3;
+            let cx = (x / s) % 3;
+            let cy = (y / s) % 3;
+            let cz = (z / s) % 3;
+            let center_count = u32::from(cx == 1) + u32::from(cy == 1) + u32::from(cz == 1);
+            if center_count >= 2 {
+                return false;
+            }
+            x %= s;
+            y %= s;
+            z %= s;
+        }
+        true
+    }
+
     fn build_octree() -> Vec<u32> {
         let size = 1u32 << OCTREE_DEPTH;
         let mut octree = world::Octree::new(OCTREE_DEPTH);
 
-        // Ground plane at y=0
-        for x in 0..size {
-            for z in 0..size {
-                octree.set(x, 0, z, 1); // grass
-            }
-        }
-
-        // Some blocks
-        for x in 10..15 {
-            for y in 1..4 {
-                for z in 10..15 {
-                    octree.set(x, y, z, 2); // wood
+        // Menger sponge filling most of the volume
+        // Use size 27 (3^3) centered in the 64^3 world
+        let sponge_size = 27u32;
+        let offset = (size - sponge_size) / 2;
+        for x in 0..sponge_size {
+            for y in 0..sponge_size {
+                for z in 0..sponge_size {
+                    if Self::is_menger(x, y, z, sponge_size) {
+                        octree.set(x + offset, y + offset, z + offset, 3);
+                    }
                 }
             }
         }
-
-        // A tower
-        for y in 1..12 {
-            octree.set(30, y, 30, 3); // stone
-            octree.set(31, y, 30, 3);
-            octree.set(30, y, 31, 3);
-            octree.set(31, y, 31, 3);
-        }
-
-        // Scattered blocks
-        octree.set(20, 1, 20, 4);
-        octree.set(22, 1, 18, 4);
-        octree.set(25, 1, 25, 2);
-        octree.set(25, 2, 25, 2);
 
         octree.flatten()
     }
@@ -194,7 +198,15 @@ impl LiveApp {
         }
         .build();
 
-        window_surface.borrow_window().set_cursor_visible(false);
+        let window = window_surface.borrow_window();
+        window.set_cursor_visible(false);
+        // Try confined first, fall back to locked
+        if window
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+            .is_err()
+        {
+            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+        }
         let window_size = window_surface.borrow_window().inner_size();
         let surface = window_surface.borrow_surface();
 

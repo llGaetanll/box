@@ -5,11 +5,11 @@ use prim::Vec3;
 /// Bit 31 marks a leaf node.
 pub const LEAF_BIT: u32 = 1 << 31;
 
-/// Bits 23..0 hold the child pointer (index into the flat array).
-pub const CHILD_PTR_MASK: u32 = 0x00FF_FFFF;
+/// Bits 22..0 hold the child pointer (index into the flat array).
+pub const CHILD_PTR_MASK: u32 = 0x007F_FFFF;
 
-/// Bits 30..24 hold the 8-bit child mask. Shift right by this to extract.
-pub const CHILD_MASK_SHIFT: u32 = 24;
+/// Bits 30..23 hold the 8-bit child mask. Shift right by this to extract.
+pub const CHILD_MASK_SHIFT: u32 = 23;
 
 /// Maximum traversal depth supported.
 const MAX_DEPTH: usize = 24;
