@@ -1,6 +1,21 @@
-[package]
-name = "voxels"
-version = "0.0.0"
-edition = "2024"
+[workspace]
+members = ["crates/*"]
+resolver = "2"
 
-[dependencies]
+[workspace.dependencies]
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "b320baf49b392b194e14f15bf06ad528c7ae656c", default-features = false }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "b320baf49b392b194e14f15bf06ad528c7ae656c" }
+
+winit = "0.30"
+wgpu = { version = "25.0.0", features = ["spirv", "vulkan-portability"] }
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
+env_logger = "0.11"
+log = "0.4"
+ouroboros = "0.18.5"
+bytemuck = { version = "1.20.0", features = ["derive"] }
+glam = "0.29"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = [
+    'cfg(target_arch, values("spirv"))'
+] }

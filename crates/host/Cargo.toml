@@ -1,0 +1,28 @@
+[package]
+name = "host"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["use-compiled-tools"]
+use-installed-tools = ["spirv-builder/use-installed-tools"]
+use-compiled-tools = ["spirv-builder/use-compiled-tools"]
+
+[dependencies]
+shared = { path = "../shared" }
+world = { path = "../world" }
+
+log = { workspace = true }
+env_logger = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+ouroboros = { workspace = true }
+futures = { workspace = true }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+
+[build-dependencies]
+spirv-builder = { workspace = true }
+
+[lints]
+workspace = true

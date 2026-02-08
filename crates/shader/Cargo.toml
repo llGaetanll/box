@@ -1,0 +1,16 @@
+[package]
+name = "shader"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+shared = { path = "../shared" }
+spirv-std = { workspace = true }
+prim = { path = "../prim" }
+world = { path = "../world", default-features = false }
+
+[lints]
+workspace = true

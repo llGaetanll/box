@@ -1,0 +1,393 @@
+use std::error::Error;
+use std::time::Instant;
+
+use futures::executor::block_on;
+use glam::Quat;
+use glam::Vec3;
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::ElementState;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::ControlFlow;
+use winit::event_loop::EventLoop;
+use winit::keyboard::Key;
+use winit::keyboard::NamedKey;
+use winit::window::WindowAttributes;
+use winit::window::WindowId;
+
+use crate::gpu::GpuContext;
+use crate::window_surface::WindowSurface;
+use crate::window_surface::WindowSurfaceBuilder;
+
+const OCTREE_DEPTH: u32 = 6; // 64x64x64 world
+
+/// Tracks which movement keys are currently held
+#[derive(Default)]
+struct KeysHeld {
+    w: bool,
+    a: bool,
+    s: bool,
+    d: bool,
+    space: bool,
+    c: bool,
+}
+
+pub struct LiveApp {
+    gpu: Option<GpuContext>,
+    window_surface: Option<WindowSurface>,
+    config: Option<wgpu::SurfaceConfiguration>,
+    render_pipeline: Option<wgpu::RenderPipeline>,
+    bind_group: Option<wgpu::BindGroup>,
+    close_requested: bool,
+    start: Instant,
+    cursor_x: f32,
+    cursor_y: f32,
+    cam_pos: Vec3,
+    cam_orientation: Quat,
+    keys_held: KeysHeld,
+    last_cursor_x: f32,
+    last_cursor_y: f32,
+    last_frame: Instant,
+}
+
+impl LiveApp {
+    pub fn new() -> Self {
+        let cam_pos = Vec3::new(32.0, 10.0, 45.0);
+        let pitch = -0.3f32;
+        let cam_orientation = Quat::from_rotation_x(pitch);
+
+        Self {
+            gpu: None,
+            window_surface: None,
+            config: None,
+            render_pipeline: None,
+            bind_group: None,
+            close_requested: false,
+            start: Instant::now(),
+            cursor_x: 0.0,
+            cursor_y: 0.0,
+            cam_pos,
+            cam_orientation,
+            keys_held: KeysHeld::default(),
+            last_cursor_x: 0.0,
+            last_cursor_y: 0.0,
+            last_frame: Instant::now(),
+        }
+    }
+
+    fn update_camera(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
+        let first_frame = self.last_cursor_x == 0.0 && self.last_cursor_y == 0.0;
+        let mouse_dx = if first_frame {
+            0.0
+        } else {
+            self.cursor_x - self.last_cursor_x
+        };
+        let mouse_dy = if first_frame {
+            0.0
+        } else {
+            self.cursor_y - self.last_cursor_y
+        };
+        self.last_cursor_x = self.cursor_x;
+        self.last_cursor_y = self.cursor_y;
+
+        let sensitivity = 0.003;
+
+        let yaw_delta = Quat::from_rotation_y(-mouse_dx * sensitivity);
+        let pitch_delta = Quat::from_rotation_x(-mouse_dy * sensitivity);
+
+        self.cam_orientation = yaw_delta * self.cam_orientation * pitch_delta;
+        self.cam_orientation = self.cam_orientation.normalize();
+
+        let forward = self.cam_orientation * Vec3::NEG_Z;
+        let right = self.cam_orientation * Vec3::X;
+
+        let forward_horizontal = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        let right_horizontal = Vec3::new(right.x, 0.0, right.z).normalize_or_zero();
+
+        let speed = 5.0 * dt;
+
+        if self.keys_held.w {
+            self.cam_pos += forward_horizontal * speed;
+        }
+        if self.keys_held.s {
+            self.cam_pos -= forward_horizontal * speed;
+        }
+        if self.keys_held.a {
+            self.cam_pos -= right_horizontal * speed;
+        }
+        if self.keys_held.d {
+            self.cam_pos += right_horizontal * speed;
+        }
+        if self.keys_held.space {
+            self.cam_pos.y += speed;
+        }
+        if self.keys_held.c {
+            self.cam_pos.y -= speed;
+        }
+    }
+
+    fn cam_dir(&self) -> Vec3 {
+        self.cam_orientation * Vec3::NEG_Z
+    }
+
+    fn cam_vup(&self) -> Vec3 {
+        self.cam_orientation * Vec3::Y
+    }
+
+    fn build_octree() -> Vec<u32> {
+        let size = 1u32 << OCTREE_DEPTH;
+        let mut octree = world::Octree::new(OCTREE_DEPTH);
+
+        // Ground plane at y=0
+        for x in 0..size {
+            for z in 0..size {
+                octree.set(x, 0, z, 1); // grass
+            }
+        }
+
+        // Some blocks
+        for x in 10..15 {
+            for y in 1..4 {
+                for z in 10..15 {
+                    octree.set(x, y, z, 2); // wood
+                }
+            }
+        }
+
+        // A tower
+        for y in 1..12 {
+            octree.set(30, y, 30, 3); // stone
+            octree.set(31, y, 30, 3);
+            octree.set(30, y, 31, 3);
+            octree.set(31, y, 31, 3);
+        }
+
+        // Scattered blocks
+        octree.set(20, 1, 20, 4);
+        octree.set(22, 1, 18, 4);
+        octree.set(25, 1, 25, 2);
+        octree.set(25, 2, 25, 2);
+
+        octree.flatten()
+    }
+
+    async fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        let window_attributes = WindowAttributes::default()
+            .with_title("Voxels")
+            .with_inner_size(LogicalSize::new(800.0, 600.0));
+        let window_box = event_loop.create_window(window_attributes)?;
+
+        let instance = GpuContext::create_instance();
+
+        let window_surface = WindowSurfaceBuilder {
+            window: Box::new(window_box),
+            surface_builder: |window| {
+                instance
+                    .create_surface(window)
+                    .expect("Failed to create surface")
+            },
+        }
+        .build();
+
+        window_surface.borrow_window().set_cursor_visible(false);
+        let window_size = window_surface.borrow_window().inner_size();
+        let surface = window_surface.borrow_surface();
+
+        let gpu = GpuContext::new(instance, Some(surface)).await?;
+
+        // Build octree and upload to GPU
+        let octree_data = Self::build_octree();
+        log::debug!("Octree flattened to {} u32 entries", octree_data.len());
+        let octree_buffer = gpu.create_storage_buffer(&octree_data);
+        let bind_group = gpu.create_bind_group(&octree_buffer);
+
+        let swapchain_format = surface.get_capabilities(&gpu.adapter).formats[0];
+
+        let render_pipeline = gpu.create_pipeline(swapchain_format, "main_fs");
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: swapchain_format,
+            width: window_size.width,
+            height: window_size.height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+            desired_maximum_frame_latency: Default::default(),
+        };
+        surface.configure(&gpu.device, &config);
+
+        self.gpu = Some(gpu);
+        self.window_surface = Some(window_surface);
+        self.config = Some(config);
+        self.render_pipeline = Some(render_pipeline);
+        self.bind_group = Some(bind_group);
+        self.start = Instant::now();
+        Ok(())
+    }
+
+    fn render(&mut self) {
+        self.update_camera();
+
+        let window_surface = match &self.window_surface {
+            Some(ws) => ws,
+            None => return,
+        };
+        let gpu = match &self.gpu {
+            Some(gpu) => gpu,
+            None => return,
+        };
+
+        let window = window_surface.borrow_window();
+        let current_size = window.inner_size();
+        let surface = window_surface.borrow_surface();
+
+        let frame = match surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(e) => {
+                eprintln!("Error getting next frame: {e:?}");
+                return;
+            }
+        };
+
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let cam_dir = self.cam_dir();
+        let cam_vup = self.cam_vup();
+        let push_constants = shared::ShaderConstants {
+            width: current_size.width,
+            height: current_size.height,
+            time: self.start.elapsed().as_secs_f32(),
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+            cam_pos: self.cam_pos.into(),
+            cam_dir: cam_dir.into(),
+            cam_vup: cam_vup.into(),
+        };
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            rpass.set_pipeline(self.render_pipeline.as_ref().unwrap());
+            rpass.set_bind_group(0, self.bind_group.as_ref().unwrap(), &[]);
+            rpass.set_push_constants(
+                wgpu::ShaderStages::VERTEX_FRAGMENT,
+                0,
+                bytemuck::bytes_of(&push_constants),
+            );
+            rpass.draw(0..3, 0..1);
+        }
+
+        gpu.queue.submit(Some(encoder.finish()));
+        frame.present();
+    }
+}
+
+impl ApplicationHandler for LiveApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Err(e) = block_on(self.init(event_loop)) {
+            eprintln!("Initialization error: {e}");
+            event_loop.exit();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => self.close_requested = true,
+            WindowEvent::Resized(new_size) => {
+                if let Some(config) = self.config.as_mut() {
+                    config.width = new_size.width;
+                    config.height = new_size.height;
+                    if let Some(ws) = &self.window_surface {
+                        let surface = ws.borrow_surface();
+                        if let Some(gpu) = &self.gpu {
+                            surface.configure(&gpu.device, config);
+                        }
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_x = position.x as f32;
+                self.cursor_y = position.y as f32;
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        if pressed {
+                            self.close_requested = true;
+                        }
+                    }
+                    Key::Named(NamedKey::Space) => self.keys_held.space = pressed,
+                    Key::Character(c) => match c.as_str() {
+                        "w" | "W" => self.keys_held.w = pressed,
+                        "a" | "A" => self.keys_held.a = pressed,
+                        "s" | "S" => self.keys_held.s = pressed,
+                        "d" | "D" => self.keys_held.d = pressed,
+                        "c" | "C" => self.keys_held.c = pressed,
+                        "q" | "Q" => {
+                            if pressed {
+                                self.close_requested = true;
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            WindowEvent::RedrawRequested => self.render(),
+            _ => {}
+        }
+
+        if self.close_requested {
+            event_loop.exit();
+        } else if let Some(ws) = &self.window_surface {
+            ws.borrow_window().request_redraw();
+        }
+        event_loop.set_control_flow(ControlFlow::Poll);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.close_requested {
+            event_loop.exit();
+        } else if let Some(ws) = &self.window_surface {
+            ws.borrow_window().request_redraw();
+        }
+        event_loop.set_control_flow(ControlFlow::Poll);
+    }
+}
+
+pub fn run_live() -> Result<(), Box<dyn Error>> {
+    let event_loop = EventLoop::new()?;
+    let mut app = LiveApp::new();
+    event_loop.run_app(&mut app).map_err(Into::into)
+}
