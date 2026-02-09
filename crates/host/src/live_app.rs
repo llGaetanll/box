@@ -20,7 +20,7 @@ use crate::gpu::GpuContext;
 use crate::window_surface::WindowSurface;
 use crate::window_surface::WindowSurfaceBuilder;
 
-const OCTREE_DEPTH: u32 = 6; // 64x64x64 world
+const CHUNK_SIZE: u32 = 64; // 4^3 = 64 per axis
 
 /// Tracks which movement keys are currently held
 #[derive(Default)]
@@ -50,6 +50,8 @@ pub struct LiveApp {
     last_cursor_x: f32,
     last_cursor_y: f32,
     last_frame: Instant,
+    tree_depth: u32,
+    tree_root: u32,
 }
 
 impl LiveApp {
@@ -78,6 +80,8 @@ impl LiveApp {
             last_cursor_x: 0.0,
             last_cursor_y: 0.0,
             last_frame: Instant::now(),
+            tree_depth: 0,
+            tree_root: 0,
         }
     }
 
@@ -166,25 +170,56 @@ impl LiveApp {
         true
     }
 
-    fn build_octree() -> Vec<u32> {
-        let size = 1u32 << OCTREE_DEPTH;
-        let mut octree = world::Octree::new(OCTREE_DEPTH);
-
-        // Menger sponge filling most of the volume
-        // Use size 27 (3^3) centered in the 64^3 world
+    fn build_tree64() -> (Vec<u32>, Vec<u32>, u32, u32) {
         let sponge_size = 27u32;
-        let offset = (size - sponge_size) / 2;
-        for x in 0..sponge_size {
+        let offset = (CHUNK_SIZE - sponge_size) / 2;
+
+        let mut flat = vec![0u8; (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE) as usize];
+        for z in 0..sponge_size {
             for y in 0..sponge_size {
-                for z in 0..sponge_size {
+                for x in 0..sponge_size {
                     if Self::is_menger(x, y, z, sponge_size) {
-                        octree.set(x + offset, y + offset, z + offset, 3);
+                        let idx = (x + offset) as usize
+                            + (y + offset) as usize * CHUNK_SIZE as usize
+                            + (z + offset) as usize * CHUNK_SIZE as usize * CHUNK_SIZE as usize;
+                        flat[idx] = 3;
                     }
                 }
             }
         }
 
-        octree.flatten()
+        let tree = tree64::Tree64::new((&flat[..], [CHUNK_SIZE; 3]));
+        let root_state = tree.root_state();
+
+        let nodes_u32: Vec<u32> = bytemuck::cast_slice(&tree.nodes).to_vec();
+
+        // Pack u8 data into u32s (little-endian, 4 bytes per u32)
+        let data_u32: Vec<u32> = tree
+            .data
+            .chunks(4)
+            .map(|chunk| {
+                let mut word = 0u32;
+                for (i, &byte) in chunk.iter().enumerate() {
+                    word |= (byte as u32) << (i * 8);
+                }
+                word
+            })
+            .collect();
+
+        log::debug!(
+            "Tree64: {} nodes, {} data bytes, {} levels, root={}",
+            tree.nodes.len(),
+            tree.data.len(),
+            root_state.num_levels,
+            root_state.index
+        );
+
+        (
+            nodes_u32,
+            data_u32,
+            root_state.num_levels as u32,
+            root_state.index,
+        )
     }
 
     async fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
@@ -219,11 +254,11 @@ impl LiveApp {
 
         let gpu = GpuContext::new(instance, Some(surface)).await?;
 
-        // Build octree and upload to GPU
-        let octree_data = Self::build_octree();
-        log::debug!("Octree flattened to {} u32 entries", octree_data.len());
-        let octree_buffer = gpu.create_storage_buffer(&octree_data);
-        let bind_group = gpu.create_bind_group(&octree_buffer);
+        // Build tree64 and upload to GPU
+        let (nodes_u32, data_u32, tree_depth, tree_root) = Self::build_tree64();
+        let node_buffer = gpu.create_storage_buffer(&nodes_u32);
+        let data_buffer = gpu.create_storage_buffer(&data_u32);
+        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer);
 
         let swapchain_format = surface.get_capabilities(&gpu.adapter).formats[0];
 
@@ -247,6 +282,8 @@ impl LiveApp {
         self.render_pipeline = Some(render_pipeline);
         self.bind_group = Some(bind_group);
         self.start = Instant::now();
+        self.tree_depth = tree_depth;
+        self.tree_root = tree_root;
         Ok(())
     }
 
@@ -293,6 +330,8 @@ impl LiveApp {
             cam_pos: self.cam_pos.into(),
             cam_dir: cam_dir.into(),
             cam_vup: cam_vup.into(),
+            tree_depth: self.tree_depth,
+            tree_root: self.tree_root,
         };
 
         {

@@ -72,17 +72,29 @@ impl GpuContext {
         };
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("octree_bind_group_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            label: Some("tree64_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         Ok(Self {
@@ -99,21 +111,31 @@ impl GpuContext {
         use wgpu::util::DeviceExt;
         self.device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("octree_storage_buffer"),
+                label: Some("storage_buffer"),
                 contents: bytemuck::cast_slice(data),
                 usage: wgpu::BufferUsages::STORAGE,
             })
     }
 
-    /// Create a bind group for the octree storage buffer.
-    pub fn create_bind_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+    /// Create a bind group for the tree64 node and data buffers.
+    pub fn create_bind_group(
+        &self,
+        node_buffer: &wgpu::Buffer,
+        data_buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("octree_bind_group"),
+            label: Some("tree64_bind_group"),
             layout: &self.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: node_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: data_buffer.as_entire_binding(),
+                },
+            ],
         })
     }
 

@@ -13,8 +13,6 @@ use spirv_std::num_traits::Float;
 use spirv_std::spirv;
 use world::VoxelHit;
 
-const OCTREE_DEPTH: u32 = 6;
-
 #[spirv(vertex)]
 pub fn main_vs(#[spirv(vertex_index)] vert_id: i32, #[spirv(position)] out_pos: &mut Vec4) {
     let uv = vec2(((vert_id << 1) & 2) as f32, (vert_id & 2) as f32);
@@ -86,7 +84,8 @@ const MAX_BOUNCES: u32 = 8;
 pub fn main_fs(
     #[spirv(frag_coord)] frag_coord: Vec4,
     #[spirv(push_constant)] constants: &ShaderConstants,
-    #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] octree_data: &[u32],
+    #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] node_data: &[u32],
+    #[spirv(descriptor_set = 0, binding = 1, storage_buffer)] voxel_data: &[u32],
     output: &mut Vec4,
 ) {
     let mut state = gen_state(frag_coord);
@@ -101,7 +100,16 @@ pub fn main_fs(
         }
 
         let mut hit = VoxelHit::default();
-        if !world::trace_octree(octree_data, OCTREE_DEPTH, &ray, 0.001, 1000.0, &mut hit) {
+        if !world::trace_tree64(
+            node_data,
+            voxel_data,
+            constants.tree_depth,
+            constants.tree_root,
+            &ray,
+            0.001,
+            1000.0,
+            &mut hit,
+        ) {
             accumulated += throughput * sky_color(ray.dir());
             break;
         }

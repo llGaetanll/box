@@ -10,6 +10,7 @@ use-compiled-tools = ["spirv-builder/use-compiled-tools"]
 
 [dependencies]
 shared = { path = "../shared" }
+tree64 = { path = "../tree64" }
 world = { path = "../world" }
 
 log = { workspace = true }

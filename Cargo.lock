@@ -949,6 +949,7 @@ dependencies = [
  "ouroboros",
  "shared",
  "spirv-builder",
+ "tree64",
  "wgpu",
  "winit",
  "world",
