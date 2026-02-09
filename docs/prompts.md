@@ -1,3 +1,10 @@
+**New Claude Instance**:
+```
+Hey Claude. Take a look at README.md and docs/impl.md for an overview of this project
+
+
+```
+
 **Datastructure Research**:
 ```
 Hey Claude. Take a look at the README for context on this project. 
