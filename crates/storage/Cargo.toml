@@ -1,0 +1,13 @@
+[package]
+name = "storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tree64 = { path = "../tree64" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
