@@ -170,7 +170,7 @@ impl LiveApp {
         true
     }
 
-    fn build_tree64() -> (Vec<u32>, Vec<u32>, u32, u32) {
+    pub fn build_tree64() -> (Vec<u32>, Vec<u32>, u32, u32) {
         let sponge_size = 27u32;
         let offset = (CHUNK_SIZE - sponge_size) / 2;
 

@@ -1,0 +1,30 @@
+scene = "main_fs"
+frame_count = 300
+
+# Camera orbits around the Menger sponge, centered at (32, 32, 32)
+position = [
+    [55.0, 45.0, 55.0],   # Start: front-right, elevated
+    [55.0, 32.0, 32.0],   # Right side, level
+    [55.0, 45.0,  9.0],   # Back-right, elevated
+    [32.0, 50.0,  5.0],   # Back center, high
+    [ 9.0, 45.0,  9.0],   # Back-left, elevated
+    [ 9.0, 32.0, 32.0],   # Left side, level
+    [ 9.0, 45.0, 55.0],   # Front-left, elevated
+    [32.0, 25.0, 60.0],   # Front center, low
+    [55.0, 45.0, 55.0],   # Back to start
+    [55.0, 32.0, 32.0],   # (duplicate for spline)
+]
+
+# Look at the sponge center throughout, with slight vertical variation
+look_at = [
+    [32.0, 32.0, 32.0],
+    [32.0, 30.0, 32.0],
+    [32.0, 32.0, 32.0],
+    [32.0, 35.0, 32.0],
+    [32.0, 32.0, 32.0],
+    [32.0, 30.0, 32.0],
+    [32.0, 32.0, 32.0],
+    [32.0, 28.0, 32.0],
+    [32.0, 32.0, 32.0],
+    [32.0, 30.0, 32.0],
+]

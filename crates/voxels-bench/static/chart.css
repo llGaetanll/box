@@ -1,0 +1,5 @@
+.legend-item { cursor: pointer; user-select: none; }
+.legend-item:hover { opacity: 0.8; }
+.reset-zoom { cursor: pointer; user-select: none; }
+.reset-zoom:hover { fill: #333 !important; }
+.plot-area { cursor: crosshair; }
