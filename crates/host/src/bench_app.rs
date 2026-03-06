@@ -43,30 +43,25 @@ pub struct BenchmarkFile {
 impl BenchmarkFile {
     /// Load a benchmark definition from `bench/configs/<name>.toml`.
     pub fn load(name: &str) -> Result<Self, Box<dyn Error>> {
-        let path = PathBuf::from("bench/configs").join(format!("{}.toml", name));
+        let path = PathBuf::from("bench/configs").join(format!("{name}.toml"));
         let contents = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
         let def: BenchmarkFile = toml::from_str(&contents)
-            .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
+            .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
 
         if def.frame_count < 1 {
-            return Err(format!("Benchmark {} needs at least 1 frame", name).into());
+            return Err(format!("Benchmark {name} needs at least 1 frame").into());
         }
         if def.position.len() < 4 {
-            return Err(format!(
-                "Benchmark {} needs at least 4 position points, got {}",
-                name,
-                def.position.len()
-            )
-            .into());
+            let len = def.position.len();
+            return Err(format!("Benchmark {name} needs at least 4 position points, got {len}")
+                .into());
         }
         if def.look_at.len() < 4 {
-            return Err(format!(
-                "Benchmark {} needs at least 4 look_at points, got {}",
-                name,
-                def.look_at.len()
-            )
-            .into());
+            let len = def.look_at.len();
+            return Err(
+                format!("Benchmark {name} needs at least 4 look_at points, got {len}").into(),
+            );
         }
 
         Ok(def)
@@ -359,7 +354,8 @@ impl BenchApp {
         fs::create_dir_all(&output_dir)?;
 
         let filename_timestamp = self.timestamp.format("%Y-%m-%d-%H-%M-%S");
-        let output_path = output_dir.join(format!("{}-{}.jsonl", filename_timestamp, self.name));
+        let name = &self.name;
+        let output_path = output_dir.join(format!("{filename_timestamp}-{name}.jsonl"));
         let file = fs::File::create(&output_path)?;
         let mut writer = BufWriter::new(file);
 
@@ -446,16 +442,16 @@ impl ApplicationHandler for BenchApp {
     }
 }
 
-pub fn run_bench(name: String) -> Result<(), Box<dyn Error>> {
+pub fn run_bench(name: String, headless: bool) -> Result<(), Box<dyn Error>> {
     let def = BenchmarkFile::load(&name)?;
     let benchmarks = vec![(name, def)];
-    run_benchmarks(benchmarks)
+    run_benchmarks(benchmarks, headless)
 }
 
-pub fn run_all_benchmarks() -> Result<(), Box<dyn Error>> {
+pub fn run_all_benchmarks(headless: bool) -> Result<(), Box<dyn Error>> {
     let benchmarks_dir = PathBuf::from("bench/configs");
     let mut benchmark_names: Vec<String> = fs::read_dir(&benchmarks_dir)
-        .map_err(|e| format!("Failed to read bench/configs directory: {}", e))?
+        .map_err(|e| format!("Failed to read bench/configs directory: {e}"))?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
@@ -485,11 +481,174 @@ pub fn run_all_benchmarks() -> Result<(), Box<dyn Error>> {
         benchmarks.push((name, def));
     }
 
-    run_benchmarks(benchmarks)
+    run_benchmarks(benchmarks, headless)
 }
 
-fn run_benchmarks(benchmarks: Vec<(String, BenchmarkFile)>) -> Result<(), Box<dyn Error>> {
-    let event_loop = EventLoop::new()?;
-    let mut app = BenchApp::new(benchmarks, Utc::now());
-    event_loop.run_app(&mut app).map_err(Into::into)
+fn run_benchmarks(
+    benchmarks: Vec<(String, BenchmarkFile)>,
+    headless: bool,
+) -> Result<(), Box<dyn Error>> {
+    if headless {
+        block_on(run_benchmarks_headless(benchmarks))
+    } else {
+        let event_loop = EventLoop::new()?;
+        let mut app = BenchApp::new(benchmarks, Utc::now());
+        event_loop.run_app(&mut app).map_err(Into::into)
+    }
+}
+
+const HEADLESS_WIDTH: u32 = 3840;
+const HEADLESS_HEIGHT: u32 = 2160;
+
+async fn run_benchmarks_headless(
+    benchmarks: Vec<(String, BenchmarkFile)>,
+) -> Result<(), Box<dyn Error>> {
+    let instance = GpuContext::create_instance();
+    let gpu = GpuContext::new(instance, None).await?;
+    let gpu_info = gpu_info_from_adapter(&gpu.adapter);
+
+    let (nodes_u32, data_u32, tree_depth, tree_root) = LiveApp::build_tree64();
+    let node_buffer = gpu.create_storage_buffer(&nodes_u32);
+    let data_buffer = gpu.create_storage_buffer(&data_u32);
+    let accum_buffer = gpu.create_accum_buffer(HEADLESS_WIDTH, HEADLESS_HEIGHT);
+    let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer, &accum_buffer);
+
+    let texture_format = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let timestamp = Utc::now();
+
+    for (name, def) in &benchmarks {
+        log::info!("Running benchmark '{}' (scene: {})", name, def.scene);
+
+        let render_pipeline = gpu.create_pipeline(texture_format, &def.scene);
+        let camera_path = CameraPath::new(
+            def.position_points(),
+            def.look_at_points(),
+            def.frame_count,
+        );
+
+        let render_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("headless_render_target"),
+            size: wgpu::Extent3d {
+                width: HEADLESS_WIDTH,
+                height: HEADLESS_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: texture_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut frame_records = Vec::new();
+
+        for frame in 0..def.frame_count {
+            let frame_start = Instant::now();
+
+            let t = camera_path.frame_t(frame);
+            let pose = camera_path.evaluate_frame(frame);
+            let cam_pos = pose.position;
+            let cam_dir = pose.direction();
+            let cam_vup = pose.up(Vec3::Y);
+
+            let push_constants = shared::ShaderConstants {
+                width: HEADLESS_WIDTH,
+                height: HEADLESS_HEIGHT,
+                time: t,
+                cursor_x: 0.0,
+                cursor_y: 0.0,
+                cam_pos: cam_pos.into(),
+                cam_dir: cam_dir.into(),
+                cam_vup: cam_vup.into(),
+                tree_depth,
+                tree_root,
+                frame_count: 0,
+            };
+
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &render_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                rpass.set_pipeline(&render_pipeline);
+                rpass.set_bind_group(0, &bind_group, &[]);
+                rpass.set_push_constants(
+                    wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    0,
+                    bytemuck::bytes_of(&push_constants),
+                );
+                rpass.draw(0..3, 0..1);
+            }
+
+            gpu.queue.submit(Some(encoder.finish()));
+            let _ = gpu.device.poll(wgpu::PollType::Wait);
+
+            let frame_time_us = frame_start.elapsed().as_micros() as u64;
+            frame_records.push(FrameRecord {
+                frame,
+                t,
+                time_us: frame_time_us,
+                cam_pos: cam_pos.into(),
+                cam_dir: cam_dir.into(),
+                cam_vup: cam_vup.into(),
+            });
+        }
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: texture_format,
+            width: HEADLESS_WIDTH,
+            height: HEADLESS_HEIGHT,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+            desired_maximum_frame_latency: Default::default(),
+        };
+
+        let metadata = BenchmarkMetadata {
+            version: 1,
+            timestamp: timestamp.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            git_sha: GIT_SHA.to_string(),
+            scene: def.scene.clone(),
+            resolution: [config.width, config.height],
+            gpu: gpu_info.clone(),
+            camera_path: camera_path.clone(),
+        };
+
+        let output_dir = PathBuf::from("bench/results").join(GIT_SHA);
+        fs::create_dir_all(&output_dir)?;
+        let filename_timestamp = timestamp.format("%Y-%m-%d-%H-%M-%S");
+        let output_path = output_dir.join(format!("{filename_timestamp}-{name}.jsonl"));
+        let file = fs::File::create(&output_path)?;
+        let mut writer = BufWriter::new(file);
+
+        serde_json::to_writer(&mut writer, &metadata)?;
+        writeln!(writer)?;
+        for record in &frame_records {
+            serde_json::to_writer(&mut writer, record)?;
+            writeln!(writer)?;
+        }
+        writer.flush()?;
+
+        log::info!("Benchmark results written to {}", output_path.display());
+    }
+
+    Ok(())
 }

@@ -18,6 +18,9 @@ pub enum Commands {
         /// Benchmark definition name (loads from bench/configs/<name>.toml).
         /// If not specified, runs all benchmarks in the bench/configs/ directory.
         name: Option<String>,
+        /// Run headless (no window). Renders to an offscreen texture.
+        #[arg(long)]
+        headless: bool,
     },
     /// Generate SVG charts from benchmark results
     Chart,

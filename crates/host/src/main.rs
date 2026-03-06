@@ -49,8 +49,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match cli.command {
         Some(Commands::Live) => live_app::run_live(),
-        Some(Commands::Bench { name: Some(name) }) => bench_app::run_bench(name),
-        Some(Commands::Bench { name: None }) => bench_app::run_all_benchmarks(),
+        Some(Commands::Bench {
+            name: Some(name),
+            headless,
+        }) => bench_app::run_bench(name, headless),
+        Some(Commands::Bench {
+            name: None,
+            headless,
+        }) => bench_app::run_all_benchmarks(headless),
         Some(Commands::Chart) => run_chart(),
         None => live_app::run_live(),
     }
