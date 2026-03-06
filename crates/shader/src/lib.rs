@@ -78,7 +78,7 @@ fn material_color(value: u32) -> Vec3 {
     }
 }
 
-const MAX_BOUNCES: u32 = 8;
+const MAX_BOUNCES: u32 = 64;
 
 /// Trace a ray through the scene, returning the final color.
 ///
@@ -119,6 +119,16 @@ pub fn trace_color(
 
         let attenuation = material_color(hit.value);
         throughput *= attenuation;
+
+        // Russian roulette: after bounce 3, randomly terminate dim paths
+        if bounce >= 3 {
+            let luminance = 0.2126 * throughput.x + 0.7152 * throughput.y + 0.0722 * throughput.z;
+            let survive = luminance.clamp(0.05, 0.95);
+            if prim::rand::rand_f(state) >= survive {
+                break;
+            }
+            throughput /= survive;
+        }
 
         // Cosine-weighted hemisphere sampling (Malley's method)
         let scatter_dir = Vec3::rand_cosine_hemisphere(state, hit.normal);
