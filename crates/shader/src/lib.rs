@@ -48,8 +48,17 @@ fn generate_ray(constants: &ShaderConstants, frag_coord: Vec4) -> Ray {
     let v = u.cross(w);
     let u = -u;
 
-    let px = (2.0 * frag_coord.x / constants.width as f32 - 1.0) * half_w;
-    let py = (1.0 - 2.0 * frag_coord.y / constants.height as f32) * half_h;
+    // R2 low-discrepancy subpixel jitter for anti-aliasing during accumulation
+    let frame = constants.frame_count as f32;
+    let jx_raw = 0.7548776662 * frame;
+    let jy_raw = 0.5698402910 * frame;
+    let jx = jx_raw - jx_raw.floor();
+    let jy = jy_raw - jy_raw.floor();
+    let sx = frag_coord.x + jx - 0.5;
+    let sy = frag_coord.y + jy - 0.5;
+
+    let px = (2.0 * sx / constants.width as f32 - 1.0) * half_w;
+    let py = (1.0 - 2.0 * sy / constants.height as f32) * half_h;
 
     let dir = (px * u + py * v - w).normalize();
     Ray::new(cam_pos, dir, 0.0)
