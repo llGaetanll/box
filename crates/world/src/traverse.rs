@@ -299,13 +299,6 @@ fn read_data_u8(data: &[u32], index: u32) -> u32 {
     (data[word_index] >> byte_offset) & 0xFF
 }
 
-/// Decode a bit position (0..63) in the 4×4×4 pop_mask back to local (x, y, z)
-/// coordinates. Encoding: index = x + y*4 + z*16.
-#[inline]
-fn bit_to_xyz(bit: u32) -> (u32, u32, u32) {
-    (bit & 3, (bit >> 2) & 3, (bit >> 4) & 3)
-}
-
 /// Count the number of set bits below `bit` in a 64-bit mask represented
 /// as two u32 halves. This is the sparse child index.
 #[inline]
@@ -321,30 +314,28 @@ fn popcount_below(mask_lo: u32, mask_hi: u32, bit: u32) -> u32 {
     }
 }
 
-/// Find the next set bit in a 64-bit mask (as two u32 halves) starting
-/// from position `start` (inclusive). Returns 64 if no bit found.
+/// Check if bit `bit` is set in a 64-bit mask stored as two u32 halves.
 #[inline]
-fn next_set_bit(mask_lo: u32, mask_hi: u32, start: u32) -> u32 {
-    if start < 32 {
-        // Check remaining bits in lo half
-        let masked_lo = mask_lo & !((1u32 << start) - 1);
-        if masked_lo != 0 {
-            return masked_lo.trailing_zeros();
-        }
-        // Check hi half
-        if mask_hi != 0 {
-            return 32 + mask_hi.trailing_zeros();
-        }
-    } else if start < 64 {
-        let masked_hi = mask_hi & !((1u32 << (start - 32)) - 1);
-        if masked_hi != 0 {
-            return 32 + masked_hi.trailing_zeros();
-        }
+fn mask_test(mask_lo: u32, mask_hi: u32, bit: u32) -> bool {
+    if bit < 32 {
+        mask_lo & (1u32 << bit) != 0
+    } else {
+        mask_hi & (1u32 << (bit - 32)) != 0
     }
-    64
 }
 
-/// Trace a ray through a tree64 (64-ary voxel tree).
+/// Encode local (x, y, z) coordinates (each 0..3) into a bit position in the
+/// 4×4×4 pop_mask. Inverse of `bit_to_xyz`.
+#[inline]
+fn xyz_to_bit(x: u32, y: u32, z: u32) -> u32 {
+    x + y * 4 + z * 16
+}
+
+/// Trace a ray through a tree64 (64-ary voxel tree) using DDA traversal.
+///
+/// Each tree level is a 4×4×4 grid. The ray is stepped through each grid
+/// in front-to-back order using Amanatides-Woo DDA. On first leaf hit the
+/// traversal terminates immediately.
 ///
 /// - `nodes`: the node array as `&[u32]` (bytemuck-cast from `&[Node]`, 3 u32s per node)
 /// - `data`: the voxel data as `&[u32]` (packed u8 values, 4 per u32)
@@ -370,15 +361,15 @@ pub fn trace_tree64(
     }
 
     // World size: 4^num_levels per axis
-    let mut size: F = 1.0;
+    let mut world_size: F = 1.0;
     let mut i = 0u32;
     while i < num_levels {
-        size *= 4.0;
+        world_size *= 4.0;
         i += 1;
     }
 
-    // Intersect ray with the world AABB [0, size]^3
-    let (t_enter, t_exit, _) = ray_aabb(ray, 0.0, 0.0, 0.0, size, size, size);
+    // Intersect ray with the world AABB [0, world_size]^3
+    let (t_enter, t_exit, _) = ray_aabb(ray, 0.0, 0.0, 0.0, world_size, world_size, world_size);
 
     let t_enter = t_enter.max(t_min);
     let t_exit = t_exit.min(t_max);
@@ -387,182 +378,218 @@ pub fn trace_tree64(
         return false;
     }
 
+    let (root_is_leaf, _, root_mask_lo, root_mask_hi) = read_node(nodes, root_index);
+    if root_mask_lo == 0 && root_mask_hi == 0 {
+        return false;
+    }
+
+    let orig = ray.orig();
+    let dir = ray.dir();
+
+    // Precompute inverse direction and step signs for DDA
+    let inv_dir = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+    let step_x: i32 = if dir.x >= 0.0 { 1 } else { -1 };
+    let step_y: i32 = if dir.y >= 0.0 { 1 } else { -1 };
+    let step_z: i32 = if dir.z >= 0.0 { 1 } else { -1 };
+
+    // Stack for hierarchical DDA traversal
     struct StackEntry {
         node_index: u32,
-        x: F,
-        y: F,
-        z: F,
-        child_size: F,
-        // Next child bit position to check (0..64, 64 = done)
-        next_child: u32,
+        // Origin of this node's grid in world space
+        ox: F,
+        oy: F,
+        oz: F,
+        // Size of each child cell at this level
+        cell_size: F,
+        // Current DDA cell position (0..3 each)
+        cx: i32,
+        cy: i32,
+        cz: i32,
+        // DDA t values for next boundary crossing in each axis
+        t_next_x: F,
+        t_next_y: F,
+        t_next_z: F,
+        // DDA t increment per cell in each axis
+        t_delta_x: F,
+        t_delta_y: F,
+        t_delta_z: F,
+        // t value where ray exits this node
+        t_exit: F,
     }
 
     let mut stack = [const {
         StackEntry {
             node_index: 0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            child_size: 0.0,
-            next_child: 0,
+            ox: 0.0, oy: 0.0, oz: 0.0,
+            cell_size: 0.0,
+            cx: 0, cy: 0, cz: 0,
+            t_next_x: 0.0, t_next_y: 0.0, t_next_z: 0.0,
+            t_delta_x: 0.0, t_delta_y: 0.0, t_delta_z: 0.0,
+            t_exit: 0.0,
         }
     }; MAX_DEPTH];
 
-    let (root_is_leaf, root_ptr, root_mask_lo, root_mask_hi) = read_node(nodes, root_index);
+    // Initialize DDA state for a node: compute starting cell and t values
+    // `t_cur` is the t at which the ray enters this node.
+    #[inline]
+    fn init_dda(
+        orig: Vec3, inv_dir: Vec3, step_x: i32, step_y: i32, step_z: i32,
+        node_ox: F, node_oy: F, node_oz: F,
+        cell_size: F, t_cur: F, node_t_exit: F,
+        entry: &mut StackEntry,
+    ) {
+        entry.cell_size = cell_size;
+        entry.ox = node_ox;
+        entry.oy = node_oy;
+        entry.oz = node_oz;
+        entry.t_exit = node_t_exit;
 
-    if root_mask_lo == 0 && root_mask_hi == 0 {
-        return false;
+        // Position where ray enters this node (nudge slightly inside)
+        let eps = cell_size * 1e-4;
+        let p = orig + (t_cur + eps) * Vec3::new(1.0 / inv_dir.x, 1.0 / inv_dir.y, 1.0 / inv_dir.z);
+
+        // Compute starting cell indices, clamped to [0, 3]
+        let fx = ((p.x - node_ox) / cell_size).floor();
+        let fy = ((p.y - node_oy) / cell_size).floor();
+        let fz = ((p.z - node_oz) / cell_size).floor();
+        entry.cx = (fx as i32).clamp(0, 3);
+        entry.cy = (fy as i32).clamp(0, 3);
+        entry.cz = (fz as i32).clamp(0, 3);
+
+        // t values at next cell boundaries
+        let bound_x = node_ox + (if step_x > 0 { entry.cx + 1 } else { entry.cx }) as F * cell_size;
+        let bound_y = node_oy + (if step_y > 0 { entry.cy + 1 } else { entry.cy }) as F * cell_size;
+        let bound_z = node_oz + (if step_z > 0 { entry.cz + 1 } else { entry.cz }) as F * cell_size;
+
+        entry.t_next_x = (bound_x - orig.x) * inv_dir.x;
+        entry.t_next_y = (bound_y - orig.y) * inv_dir.y;
+        entry.t_next_z = (bound_z - orig.z) * inv_dir.z;
+
+        // t increment per cell
+        entry.t_delta_x = (cell_size * inv_dir.x).abs();
+        entry.t_delta_y = (cell_size * inv_dir.y).abs();
+        entry.t_delta_z = (cell_size * inv_dir.z).abs();
     }
 
-    // If root is a leaf, we're at the bottom level already — handle inline
-    if root_is_leaf {
-        let child_size: F = 1.0;
-        let mut best_t = t_max;
-        let mut found = false;
-        let mut bit = next_set_bit(root_mask_lo, root_mask_hi, 0);
-        while bit < 64 {
-            let (lx, ly, lz) = bit_to_xyz(bit);
-            let cx = lx as F * child_size;
-            let cy = ly as F * child_size;
-            let cz = lz as F * child_size;
-            let (ct_enter, ct_exit, face_axis) = ray_aabb(
-                ray,
-                cx,
-                cy,
-                cz,
-                cx + child_size,
-                cy + child_size,
-                cz + child_size,
-            );
-            let ct_enter = ct_enter.max(t_min);
-            let ct_exit = ct_exit.min(best_t);
-            if ct_enter < ct_exit {
-                let sparse_index = popcount_below(root_mask_lo, root_mask_hi, bit);
-                let value = read_data_u8(data, root_ptr + sparse_index);
-                best_t = ct_enter;
-                hit.t = ct_enter;
-                hit.value = value;
-                hit.normal = face_normal(ray, face_axis);
-                hit.pos = [cx as u32, cy as u32, cz as u32];
-                found = true;
-            }
-            bit = next_set_bit(root_mask_lo, root_mask_hi, bit + 1);
-        }
-        return found;
-    }
-
-    let first_bit = next_set_bit(root_mask_lo, root_mask_hi, 0);
-    stack[0] = StackEntry {
-        node_index: root_index,
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-        child_size: size / 4.0,
-        next_child: first_bit,
-    };
+    // Push root node
+    let root_cell_size = if root_is_leaf { 1.0 } else { world_size / 4.0 };
+    init_dda(
+        orig, inv_dir, step_x, step_y, step_z,
+        0.0, 0.0, 0.0,
+        root_cell_size, t_enter, t_exit,
+        &mut stack[0],
+    );
+    stack[0].node_index = root_index;
     let mut sp: usize = 1;
-
-    let mut best_t = t_max;
-    let mut found = false;
 
     while sp > 0 {
         let top = sp - 1;
 
-        if stack[top].next_child >= 64 {
+        // Check if current cell is out of bounds (DDA stepped outside 4×4×4 grid)
+        if stack[top].cx < 0 || stack[top].cx > 3
+            || stack[top].cy < 0 || stack[top].cy > 3
+            || stack[top].cz < 0 || stack[top].cz > 3
+        {
             sp -= 1;
             continue;
         }
 
-        let bit = stack[top].next_child;
         let node_index = stack[top].node_index;
-        let parent_x = stack[top].x;
-        let parent_y = stack[top].y;
-        let parent_z = stack[top].z;
-        let child_size = stack[top].child_size;
+        let cx = stack[top].cx as u32;
+        let cy = stack[top].cy as u32;
+        let cz = stack[top].cz as u32;
+        let cell_size = stack[top].cell_size;
+        let ox = stack[top].ox;
+        let oy = stack[top].oy;
+        let oz = stack[top].oz;
 
-        let (_, parent_ptr, p_mask_lo, p_mask_hi) = read_node(nodes, node_index);
+        // Compute t_enter for the current cell from the DDA state
+        // It's the max of t_next minus t_delta for each axis, but simpler
+        // to just use the cell AABB entry. We use the minimum of t_next values
+        // as t_exit for this cell.
+        let t_next_x = stack[top].t_next_x;
+        let t_next_y = stack[top].t_next_y;
+        let t_next_z = stack[top].t_next_z;
+        // Advance DDA to next cell (for the next iteration at this level)
+        // Step along the axis with the smallest t_next
+        if t_next_x <= t_next_y && t_next_x <= t_next_z {
+            stack[top].cx += step_x;
+            stack[top].t_next_x += stack[top].t_delta_x;
+        } else if t_next_y <= t_next_z {
+            stack[top].cy += step_y;
+            stack[top].t_next_y += stack[top].t_delta_y;
+        } else {
+            stack[top].cz += step_z;
+            stack[top].t_next_z += stack[top].t_delta_z;
+        }
 
-        // Advance to next set bit for the next iteration
-        stack[top].next_child = next_set_bit(p_mask_lo, p_mask_hi, bit + 1);
+        let bit = xyz_to_bit(cx, cy, cz);
+        let (is_leaf, ptr, mask_lo, mask_hi) = read_node(nodes, node_index);
 
-        // Compute child AABB
-        let (lx, ly, lz) = bit_to_xyz(bit);
-        let cx = parent_x + lx as F * child_size;
-        let cy = parent_y + ly as F * child_size;
-        let cz = parent_z + lz as F * child_size;
-
-        // Intersect ray with child AABB
-        let (ct_enter, ct_exit, _) = ray_aabb(
-            ray,
-            cx,
-            cy,
-            cz,
-            cx + child_size,
-            cy + child_size,
-            cz + child_size,
-        );
-
-        let ct_enter = ct_enter.max(t_min);
-        let ct_exit = ct_exit.min(best_t);
-
-        if ct_enter >= ct_exit {
+        // Check if this cell is occupied
+        if !mask_test(mask_lo, mask_hi, bit) {
             continue;
         }
 
-        // Find sparse child index
-        let sparse_index = popcount_below(p_mask_lo, p_mask_hi, bit);
-        let child_node_index = parent_ptr + sparse_index;
+        let sparse_index = popcount_below(mask_lo, mask_hi, bit);
 
-        let (child_is_leaf, child_ptr, c_mask_lo, c_mask_hi) = read_node(nodes, child_node_index);
+        if is_leaf {
+            // This node's children are data (voxels) — we found a hit
+            let value = read_data_u8(data, ptr + sparse_index);
+            let vox_x = ox + cx as F * cell_size;
+            let vox_y = oy + cy as F * cell_size;
+            let vox_z = oz + cz as F * cell_size;
 
-        if child_is_leaf {
-            // This child is a leaf node — iterate over its data entries
-            let leaf_child_size = child_size / 4.0;
-            let mut leaf_bit = next_set_bit(c_mask_lo, c_mask_hi, 0);
-            while leaf_bit < 64 {
-                let (vx, vy, vz) = bit_to_xyz(leaf_bit);
-                let vox_x = cx + vx as F * leaf_child_size;
-                let vox_y = cy + vy as F * leaf_child_size;
-                let vox_z = cz + vz as F * leaf_child_size;
-                let (vt_enter, vt_exit, vface_axis) = ray_aabb(
-                    ray,
-                    vox_x,
-                    vox_y,
-                    vox_z,
-                    vox_x + leaf_child_size,
-                    vox_y + leaf_child_size,
-                    vox_z + leaf_child_size,
-                );
-                let vt_enter = vt_enter.max(t_min);
-                let vt_exit = vt_exit.min(best_t);
-                if vt_enter < vt_exit {
-                    let leaf_sparse = popcount_below(c_mask_lo, c_mask_hi, leaf_bit);
-                    let value = read_data_u8(data, child_ptr + leaf_sparse);
-                    best_t = vt_enter;
-                    hit.t = vt_enter;
-                    hit.value = value;
-                    hit.normal = face_normal(ray, vface_axis);
-                    hit.pos = [vox_x as u32, vox_y as u32, vox_z as u32];
-                    found = true;
-                }
-                leaf_bit = next_set_bit(c_mask_lo, c_mask_hi, leaf_bit + 1);
-            }
-        } else if (c_mask_lo != 0 || c_mask_hi != 0) && sp < MAX_DEPTH {
-            // Internal node — push onto stack
-            let first = next_set_bit(c_mask_lo, c_mask_hi, 0);
-            stack[sp] = StackEntry {
-                node_index: child_node_index,
-                x: cx,
-                y: cy,
-                z: cz,
-                child_size: child_size / 4.0,
-                next_child: first,
-            };
-            sp += 1;
+            // Compute entry t and face for this specific voxel cell
+            let (vt_enter, _, vface) = ray_aabb(
+                ray,
+                vox_x, vox_y, vox_z,
+                vox_x + cell_size, vox_y + cell_size, vox_z + cell_size,
+            );
+            let vt_enter = vt_enter.max(t_min);
+
+            hit.t = vt_enter;
+            hit.value = value;
+            hit.normal = face_normal(ray, vface);
+            hit.pos = [vox_x as u32, vox_y as u32, vox_z as u32];
+            return true;
         }
+
+        // Internal child node — descend with a new DDA
+        let child_node_index = ptr + sparse_index;
+        let (_, _, c_mask_lo, c_mask_hi) = read_node(nodes, child_node_index);
+
+        if (c_mask_lo == 0 && c_mask_hi == 0) || sp >= MAX_DEPTH {
+            continue;
+        }
+
+        let child_ox = ox + cx as F * cell_size;
+        let child_oy = oy + cy as F * cell_size;
+        let child_oz = oz + cz as F * cell_size;
+
+        // Compute t_enter for the child node
+        let (child_t_enter, child_t_exit, _) = ray_aabb(
+            ray,
+            child_ox, child_oy, child_oz,
+            child_ox + cell_size, child_oy + cell_size, child_oz + cell_size,
+        );
+        let child_t_enter = child_t_enter.max(t_min);
+        let child_t_exit = child_t_exit.min(t_max);
+
+        let (child_is_leaf, _, _, _) = read_node(nodes, child_node_index);
+        let child_cell_size = if child_is_leaf { cell_size / 4.0 } else { cell_size / 4.0 };
+
+        init_dda(
+            orig, inv_dir, step_x, step_y, step_z,
+            child_ox, child_oy, child_oz,
+            child_cell_size, child_t_enter, child_t_exit,
+            &mut stack[sp],
+        );
+        stack[sp].node_index = child_node_index;
+        sp += 1;
     }
 
-    found
+    false
 }
 
 #[cfg(test)]
