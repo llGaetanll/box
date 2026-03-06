@@ -39,6 +39,10 @@ pub struct LiveApp {
     config: Option<wgpu::SurfaceConfiguration>,
     render_pipeline: Option<wgpu::RenderPipeline>,
     bind_group: Option<wgpu::BindGroup>,
+    node_buffer: Option<wgpu::Buffer>,
+    data_buffer: Option<wgpu::Buffer>,
+    accum_buffer: Option<wgpu::Buffer>,
+    accum_size: (u32, u32),
     close_requested: bool,
     start: Instant,
     cursor_x: f32,
@@ -73,6 +77,10 @@ impl LiveApp {
             config: None,
             render_pipeline: None,
             bind_group: None,
+            node_buffer: None,
+            data_buffer: None,
+            accum_buffer: None,
+            accum_size: (0, 0),
             close_requested: false,
             start: Instant::now(),
             cursor_x: 0.0,
@@ -266,7 +274,8 @@ impl LiveApp {
         let (nodes_u32, data_u32, tree_depth, tree_root) = Self::build_tree64();
         let node_buffer = gpu.create_storage_buffer(&nodes_u32);
         let data_buffer = gpu.create_storage_buffer(&data_u32);
-        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer);
+        let accum_buffer = gpu.create_accum_buffer(window_size.width, window_size.height);
+        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer, &accum_buffer);
 
         let swapchain_format = surface.get_capabilities(&gpu.adapter).formats[0];
 
@@ -289,6 +298,10 @@ impl LiveApp {
         self.config = Some(config);
         self.render_pipeline = Some(render_pipeline);
         self.bind_group = Some(bind_group);
+        self.node_buffer = Some(node_buffer);
+        self.data_buffer = Some(data_buffer);
+        self.accum_buffer = Some(accum_buffer);
+        self.accum_size = (window_size.width, window_size.height);
         self.start = Instant::now();
         self.tree_depth = tree_depth;
         self.tree_root = tree_root;
@@ -329,6 +342,20 @@ impl LiveApp {
 
         let cam_dir = self.cam_dir();
         let cam_vup = self.cam_vup();
+
+        // Recreate accumulation buffer if window was resized
+        if (current_size.width, current_size.height) != self.accum_size {
+            let accum_buffer = gpu.create_accum_buffer(current_size.width, current_size.height);
+            let bind_group = gpu.create_bind_group(
+                self.node_buffer.as_ref().unwrap(),
+                self.data_buffer.as_ref().unwrap(),
+                &accum_buffer,
+            );
+            self.accum_buffer = Some(accum_buffer);
+            self.bind_group = Some(bind_group);
+            self.accum_size = (current_size.width, current_size.height);
+            self.frame_count = 0;
+        }
 
         let camera_moved = self.cam_pos != self.prev_cam_pos
             || self.yaw != self.prev_yaw

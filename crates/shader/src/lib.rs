@@ -157,6 +157,7 @@ pub fn main_fs(
     #[spirv(push_constant)] constants: &ShaderConstants,
     #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] node_data: &[u32],
     #[spirv(descriptor_set = 0, binding = 1, storage_buffer)] voxel_data: &[u32],
+    #[spirv(descriptor_set = 0, binding = 2, storage_buffer)] accum: &mut [u32],
     output: &mut Vec4,
 ) {
     let mut state = gen_state(frag_coord);
@@ -169,11 +170,34 @@ pub fn main_fs(
         &ray,
         &mut state,
     );
-    let color = tonemap_aces(color);
-    let color = Vec3::new(
-        color.x.powf(1.0 / 2.2),
-        color.y.powf(1.0 / 2.2),
-        color.z.powf(1.0 / 2.2),
+
+    // Temporal accumulation: blend with history in linear space
+    let px = frag_coord.x as u32;
+    let py = frag_coord.y as u32;
+    let idx = (py * constants.width + px) as usize * 4;
+
+    let color = if constants.frame_count == 0 {
+        color
+    } else {
+        let prev = Vec3::new(
+            f32::from_bits(accum[idx]),
+            f32::from_bits(accum[idx + 1]),
+            f32::from_bits(accum[idx + 2]),
+        );
+        let weight = 1.0 / (constants.frame_count as f32 + 1.0);
+        prev + (color - prev) * weight
+    };
+
+    accum[idx] = color.x.to_bits();
+    accum[idx + 1] = color.y.to_bits();
+    accum[idx + 2] = color.z.to_bits();
+
+    // Tonemap and gamma correct for display
+    let display = tonemap_aces(color);
+    let display = Vec3::new(
+        display.x.powf(1.0 / 2.2),
+        display.y.powf(1.0 / 2.2),
+        display.z.powf(1.0 / 2.2),
     );
-    *output = vec4(color.x, color.y, color.z, 1.0);
+    *output = vec4(display.x, display.y, display.z, 1.0);
 }

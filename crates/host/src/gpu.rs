@@ -94,6 +94,16 @@ impl GpuContext {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -117,11 +127,12 @@ impl GpuContext {
             })
     }
 
-    /// Create a bind group for the tree64 node and data buffers.
+    /// Create a bind group for the tree64 node and data buffers plus accumulation buffer.
     pub fn create_bind_group(
         &self,
         node_buffer: &wgpu::Buffer,
         data_buffer: &wgpu::Buffer,
+        accum_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tree64_bind_group"),
@@ -135,7 +146,22 @@ impl GpuContext {
                     binding: 1,
                     resource: data_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: accum_buffer.as_entire_binding(),
+                },
             ],
+        })
+    }
+
+    /// Create a storage buffer for accumulation (read-write, zero-initialized).
+    pub fn create_accum_buffer(&self, width: u32, height: u32) -> wgpu::Buffer {
+        let size = (width * height * 4 * std::mem::size_of::<f32>() as u32) as u64;
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("accum_buffer"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
         })
     }
 

@@ -211,7 +211,8 @@ impl BenchApp {
         let (nodes_u32, data_u32, tree_depth, tree_root) = LiveApp::build_tree64();
         let node_buffer = gpu.create_storage_buffer(&nodes_u32);
         let data_buffer = gpu.create_storage_buffer(&data_u32);
-        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer);
+        let accum_buffer = gpu.create_accum_buffer(window_size.width, window_size.height);
+        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer, &accum_buffer);
 
         let swapchain_format = surface.get_capabilities(&gpu.adapter).formats[0];
         let render_pipeline = gpu.create_pipeline(swapchain_format, &self.scene);
