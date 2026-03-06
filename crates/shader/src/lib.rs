@@ -55,10 +55,10 @@ fn generate_ray(constants: &ShaderConstants, frag_coord: Vec4) -> Ray {
     Ray::new(cam_pos, dir, 0.0)
 }
 
-fn gen_state(frag_coord: Vec4) -> RandState {
+fn gen_state(frag_coord: Vec4, frame: u32) -> RandState {
     let x = frag_coord.x as u32;
     let y = frag_coord.y as u32;
-    let state = x.wrapping_mul(747796405).wrapping_add(y);
+    let state = x.wrapping_mul(747796405).wrapping_add(y).wrapping_add(frame.wrapping_mul(2654435761));
     let word = ((state >> ((state >> 28) + 4)) ^ state).wrapping_mul(277803737);
     (word >> 22) ^ word
 }
@@ -160,7 +160,7 @@ pub fn main_fs(
     #[spirv(descriptor_set = 0, binding = 2, storage_buffer)] accum: &mut [u32],
     output: &mut Vec4,
 ) {
-    let mut state = gen_state(frag_coord);
+    let mut state = gen_state(frag_coord, constants.frame_count);
     let ray = generate_ray(constants, frag_coord);
     let color = trace_color(
         node_data,
