@@ -52,6 +52,10 @@ pub struct LiveApp {
     last_frame: Instant,
     tree_depth: u32,
     tree_root: u32,
+    frame_count: u32,
+    prev_cam_pos: Vec3,
+    prev_yaw: f32,
+    prev_pitch: f32,
 }
 
 impl LiveApp {
@@ -82,6 +86,10 @@ impl LiveApp {
             last_frame: Instant::now(),
             tree_depth: 0,
             tree_root: 0,
+            frame_count: 0,
+            prev_cam_pos: cam_pos,
+            prev_yaw: yaw,
+            prev_pitch: pitch,
         }
     }
 
@@ -321,6 +329,19 @@ impl LiveApp {
 
         let cam_dir = self.cam_dir();
         let cam_vup = self.cam_vup();
+
+        let camera_moved = self.cam_pos != self.prev_cam_pos
+            || self.yaw != self.prev_yaw
+            || self.pitch != self.prev_pitch;
+        if camera_moved {
+            self.frame_count = 0;
+        } else {
+            self.frame_count += 1;
+        }
+        self.prev_cam_pos = self.cam_pos;
+        self.prev_yaw = self.yaw;
+        self.prev_pitch = self.pitch;
+
         let push_constants = shared::ShaderConstants {
             width: current_size.width,
             height: current_size.height,
@@ -332,6 +353,7 @@ impl LiveApp {
             cam_vup: cam_vup.into(),
             tree_depth: self.tree_depth,
             tree_root: self.tree_root,
+            frame_count: self.frame_count,
         };
 
         {

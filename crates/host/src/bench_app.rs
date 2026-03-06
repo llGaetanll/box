@@ -304,6 +304,7 @@ impl BenchApp {
             cam_vup: cam_vup.into(),
             tree_depth: self.tree_depth,
             tree_root: self.tree_root,
+            frame_count: 0,
         };
 
         {

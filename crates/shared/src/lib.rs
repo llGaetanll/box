@@ -16,4 +16,5 @@ pub struct ShaderConstants {
     pub cam_vup: [f32; 3],
     pub tree_depth: u32,
     pub tree_root: u32,
+    pub frame_count: u32,
 }
