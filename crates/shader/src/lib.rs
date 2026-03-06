@@ -134,6 +134,16 @@ pub fn trace_color(
     accumulated
 }
 
+fn tonemap_aces(c: Vec3) -> Vec3 {
+    let a = c * (c * 2.51 + Vec3::splat(0.03));
+    let b = c * (c * 2.43 + Vec3::splat(0.59)) + Vec3::splat(0.14);
+    Vec3::new(
+        (a.x / b.x).clamp(0.0, 1.0),
+        (a.y / b.y).clamp(0.0, 1.0),
+        (a.z / b.z).clamp(0.0, 1.0),
+    )
+}
+
 #[spirv(fragment)]
 pub fn main_fs(
     #[spirv(frag_coord)] frag_coord: Vec4,
@@ -151,6 +161,12 @@ pub fn main_fs(
         constants.tree_root,
         &ray,
         &mut state,
+    );
+    let color = tonemap_aces(color);
+    let color = Vec3::new(
+        color.x.powf(1.0 / 2.2),
+        color.y.powf(1.0 / 2.2),
+        color.z.powf(1.0 / 2.2),
     );
     *output = vec4(color.x, color.y, color.z, 1.0);
 }
