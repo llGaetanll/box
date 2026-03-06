@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(target_arch = "spirv", no_std)]
 
 use prim::Ray;
 use prim::Vec3;
@@ -80,16 +80,19 @@ fn material_color(value: u32) -> Vec3 {
 
 const MAX_BOUNCES: u32 = 8;
 
-#[spirv(fragment)]
-pub fn main_fs(
-    #[spirv(frag_coord)] frag_coord: Vec4,
-    #[spirv(push_constant)] constants: &ShaderConstants,
-    #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] node_data: &[u32],
-    #[spirv(descriptor_set = 0, binding = 1, storage_buffer)] voxel_data: &[u32],
-    output: &mut Vec4,
-) {
-    let mut state = gen_state(frag_coord);
-    let mut ray = generate_ray(constants, frag_coord);
+/// Trace a ray through the scene, returning the final color.
+///
+/// This is the core path tracing loop, factored out of main_fs so it can be
+/// tested on the CPU.
+pub fn trace_color(
+    node_data: &[u32],
+    voxel_data: &[u32],
+    tree_depth: u32,
+    tree_root: u32,
+    ray: &Ray,
+    state: &mut prim::RandState,
+) -> Vec3 {
+    let mut ray = *ray;
     let mut throughput = Vec3::new(1.0, 1.0, 1.0);
     let mut accumulated = Vec3::new(0.0, 0.0, 0.0);
 
@@ -103,8 +106,8 @@ pub fn main_fs(
         if !world::trace_tree64(
             node_data,
             voxel_data,
-            constants.tree_depth,
-            constants.tree_root,
+            tree_depth,
+            tree_root,
             &ray,
             0.001,
             1000.0,
@@ -118,7 +121,7 @@ pub fn main_fs(
         throughput *= attenuation;
 
         // Lambertian scatter: new direction = normal + random unit vector
-        let mut scatter_dir = hit.normal + Vec3::rand_unit(&mut state);
+        let mut scatter_dir = hit.normal + Vec3::rand_unit(state);
         if scatter_dir.near_zero() {
             scatter_dir = hit.normal;
         }
@@ -128,7 +131,99 @@ pub fn main_fs(
         bounce += 1;
     }
 
-    // If we exhausted all bounces without escaping, the ray absorbed all light
-    let color = accumulated;
+    accumulated
+}
+
+#[spirv(fragment)]
+pub fn main_fs(
+    #[spirv(frag_coord)] frag_coord: Vec4,
+    #[spirv(push_constant)] constants: &ShaderConstants,
+    #[spirv(descriptor_set = 0, binding = 0, storage_buffer)] node_data: &[u32],
+    #[spirv(descriptor_set = 0, binding = 1, storage_buffer)] voxel_data: &[u32],
+    output: &mut Vec4,
+) {
+    let mut state = gen_state(frag_coord);
+    let ray = generate_ray(constants, frag_coord);
+    let color = trace_color(
+        node_data,
+        voxel_data,
+        constants.tree_depth,
+        constants.tree_root,
+        &ray,
+        &mut state,
+    );
     *output = vec4(color.x, color.y, color.z, 1.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a tree64 with a single voxel of the given value at position (x,y,z)
+    /// within a 4x4x4 grid. Returns (nodes_u32, data_u32, num_levels, root_index).
+    fn single_voxel_tree(x: u32, y: u32, z: u32, value: u8) -> (Vec<u32>, Vec<u32>, u32, u32) {
+        let mut flat = [0u8; 64];
+        flat[(x + y * 4 + z * 16) as usize] = value;
+        let tree = tree64::Tree64::new((&flat[..], [4, 4, 4]));
+        let root = tree.root_state();
+        let nodes_u32: Vec<u32> = bytemuck::cast_slice(&tree.nodes).to_vec();
+        let data_u32: Vec<u32> = tree
+            .data
+            .chunks(4)
+            .map(|chunk| {
+                let mut word = 0u32;
+                for (i, &b) in chunk.iter().enumerate() {
+                    word |= (b as u32) << (i * 8);
+                }
+                word
+            })
+            .collect();
+        (nodes_u32, data_u32, root.num_levels as u32, root.index)
+    }
+
+    #[test]
+    fn ray_hits_single_voxel_and_sees_sky() {
+        // Place a stone voxel (value=3) at (1,1,1) in a 4^3 grid.
+        // Shoot a ray from outside, straight at it along +X.
+        // The ray should hit the voxel, scatter, and (with this seed)
+        // eventually escape to the sky, producing a nonzero color.
+        let (nodes, data, depth, root) = single_voxel_tree(1, 1, 1, 3);
+        let ray = Ray::new(Vec3::new(-5.0, 1.5, 1.5), Vec3::new(1.0, 0.0, 0.0), 0.0);
+        let mut state: prim::RandState = 42;
+
+        let color = trace_color(&nodes, &data, depth, root, &ray, &mut state);
+
+        // Should have some color contribution (hit stone -> sky)
+        assert!(color.x > 0.0 || color.y > 0.0 || color.z > 0.0,
+            "expected nonzero color after hitting voxel, got {color:?}");
+    }
+
+    #[test]
+    fn ray_misses_everything_returns_sky() {
+        // Same scene but ray goes in -X direction, away from the voxel.
+        let (nodes, data, depth, root) = single_voxel_tree(1, 1, 1, 3);
+        let ray = Ray::new(Vec3::new(-5.0, 1.5, 1.5), Vec3::new(-1.0, 0.0, 0.0), 0.0);
+        let mut state: prim::RandState = 42;
+
+        let color = trace_color(&nodes, &data, depth, root, &ray, &mut state);
+        let expected_sky = sky_color(ray.dir());
+
+        assert!((color.x - expected_sky.x).abs() < 1e-6);
+        assert!((color.y - expected_sky.y).abs() < 1e-6);
+        assert!((color.z - expected_sky.z).abs() < 1e-6);
+    }
+
+    #[test]
+    fn deterministic_with_same_seed() {
+        let (nodes, data, depth, root) = single_voxel_tree(2, 0, 2, 1);
+        let ray = Ray::new(Vec3::new(-5.0, 0.5, 2.5), Vec3::new(1.0, 0.0, 0.0), 0.0);
+
+        let mut state1: prim::RandState = 123;
+        let color1 = trace_color(&nodes, &data, depth, root, &ray, &mut state1);
+
+        let mut state2: prim::RandState = 123;
+        let color2 = trace_color(&nodes, &data, depth, root, &ray, &mut state2);
+
+        assert_eq!(color1, color2, "same seed should produce identical results");
+    }
 }

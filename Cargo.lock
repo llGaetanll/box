@@ -2336,9 +2336,11 @@ dependencies = [
 name = "shader"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "prim",
  "shared",
  "spirv-std",
+ "tree64",
  "world",
 ]
 
