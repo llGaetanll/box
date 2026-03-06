@@ -120,14 +120,11 @@ pub fn trace_color(
         let attenuation = material_color(hit.value);
         throughput *= attenuation;
 
-        // Lambertian scatter: new direction = normal + random unit vector
-        let mut scatter_dir = hit.normal + Vec3::rand_unit(state);
-        if scatter_dir.near_zero() {
-            scatter_dir = hit.normal;
-        }
+        // Cosine-weighted hemisphere sampling (Malley's method)
+        let scatter_dir = Vec3::rand_cosine_hemisphere(state, hit.normal);
 
         let hit_point = ray.orig() + hit.t * ray.dir();
-        ray = Ray::new(hit_point, scatter_dir.normalize(), 0.0);
+        ray = Ray::new(hit_point, scatter_dir, 0.0);
         bounce += 1;
     }
 

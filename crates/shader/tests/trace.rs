@@ -97,17 +97,17 @@ fn snapshot_all_axes() {
     let (nodes, data, depth, root) = single_voxel_tree(1, 1, 1, 3);
     let cases: &[(&str, Vec3, Vec3, Vec3)] = &[
         ("plus_x",  Vec3::new(-5.0, 1.5, 1.5), Vec3::new(1.0, 0.0, 0.0),
-         Vec3::new(0.4427457, 0.5056474, 0.6)),
+         Vec3::new(0.45202476, 0.51121485, 0.6)),
         ("minus_x", Vec3::new(9.0, 1.5, 1.5),  Vec3::new(-1.0, 0.0, 0.0),
-         Vec3::new(0.44880405, 0.5092824, 0.6)),
+         Vec3::new(0.45202476, 0.51121485, 0.6)),
         ("plus_y",  Vec3::new(1.5, -5.0, 1.5), Vec3::new(0.0, 1.0, 0.0),
-         Vec3::new(0.5552283, 0.573137, 0.6)),
+         Vec3::new(0.53742415, 0.5624545, 0.6)),
         ("minus_y", Vec3::new(1.5, 9.0, 1.5),  Vec3::new(0.0, -1.0, 0.0),
-         Vec3::new(0.3431028, 0.4458617, 0.6)),
+         Vec3::new(0.3625759, 0.45754555, 0.6)),
         ("plus_z",  Vec3::new(1.5, 1.5, -5.0), Vec3::new(0.0, 0.0, 1.0),
-         Vec3::new(0.44797528, 0.5087852, 0.6)),
+         Vec3::new(0.5718726, 0.58312356, 0.6)),
         ("minus_z", Vec3::new(1.5, 1.5, 9.0),  Vec3::new(0.0, 0.0, -1.0),
-         Vec3::new(0.4485478, 0.5091287, 0.6)),
+         Vec3::new(0.32812744, 0.4368765, 0.6)),
     ];
     for (name, orig, dir, expected) in cases {
         let ray = Ray::new(*orig, *dir, 0.0);
@@ -130,12 +130,12 @@ fn two_voxels_front_to_back() {
     let ray_fwd = Ray::new(Vec3::new(-5.0, 1.5, 1.5), Vec3::new(1.0, 0.0, 0.0), 0.0);
     let mut state: prim::RandState = 42;
     let near = trace_color(&n, &d, dep, r, &ray_fwd, &mut state);
-    assert_color_eq(near, Vec3::new(0.22137284, 0.58992195, 0.2), "near (grass)");
+    assert_color_eq(near, Vec3::new(0.22601238, 0.5964173, 0.2), "near (grass)");
 
     let ray_bwd = Ray::new(Vec3::new(9.0, 1.5, 1.5), Vec3::new(-1.0, 0.0, 0.0), 0.0);
     let mut state: prim::RandState = 42;
     let far = trace_color(&n, &d, dep, r, &ray_bwd, &mut state);
-    assert_color_eq(far, Vec3::new(0.59840536, 0.16976081, 0.2), "far (red)");
+    assert_color_eq(far, Vec3::new(0.6026997, 0.17040496, 0.2), "far (red)");
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn ray_from_inside_tree() {
     let ray = Ray::new(Vec3::new(2.0, 1.5, 1.5), Vec3::new(1.0, 0.0, 0.0), 0.0);
     let mut state: prim::RandState = 42;
     let color = trace_color(&n, &d, dep, r, &ray, &mut state);
-    assert_color_eq(color, Vec3::new(0.59032756, 0.16854914, 0.2), "inside tree");
+    assert_color_eq(color, Vec3::new(0.6026997, 0.17040496, 0.2), "inside tree");
 }
 
 #[test]
@@ -162,5 +162,5 @@ fn deep_tree_two_levels() {
     let ray = Ray::new(Vec3::new(-5.0, 5.5, 5.5), Vec3::new(1.0, 0.0, 0.0), 0.0);
     let mut state: prim::RandState = 42;
     let color = trace_color(&n, &d, dep, r, &ray, &mut state);
-    assert_color_eq(color, Vec3::new(0.4058502, 0.29496098, 0.15), "deep tree");
+    assert_color_eq(color, Vec3::new(0.41435602, 0.29820865, 0.15), "deep tree");
 }

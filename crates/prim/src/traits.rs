@@ -15,6 +15,8 @@ pub trait Vec3Ext {
 
     fn rand_hemisphere(state: &mut RandState, normal: Vec3) -> Self;
 
+    fn rand_cosine_hemisphere(state: &mut RandState, normal: Vec3) -> Self;
+
     fn rand_unit_disk(state: &mut RandState) -> Self;
 
     fn near_zero(&self) -> bool;
@@ -45,6 +47,24 @@ impl Vec3Ext for Vec3 {
         } else {
             -v
         }
+    }
+
+    fn rand_cosine_hemisphere(state: &mut RandState, normal: Vec3) -> Self {
+        // Malley's method: sample unit disk, project onto hemisphere.
+        let theta = 2.0 * PI * rand::rand_f(state);
+        let r2 = rand::rand_f(state);
+        let r = r2.sqrt();
+
+        // Build orthonormal basis from normal
+        let a = if normal.x.abs() > 0.9 {
+            Vec3::new(0.0, 1.0, 0.0)
+        } else {
+            Vec3::new(1.0, 0.0, 0.0)
+        };
+        let t = normal.cross(a).normalize();
+        let b = normal.cross(t);
+
+        (t * r * theta.cos() + b * r * theta.sin() + normal * (1.0 - r2).sqrt()).normalize()
     }
 
     fn rand_unit_disk(state: &mut RandState) -> Self {
