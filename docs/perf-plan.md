@@ -101,28 +101,18 @@ Step 3a: DDA within tree64 nodes
 
 Commit: "Replace bitmask iteration with DDA traversal"
 
-Step 3b: Ray-octant mirroring
-- Reflect ray into canonical octant at traversal start
-- XOR cell indices with mirror mask during lookup
-- Eliminates direction-sign branches in intersection math
-- Test: all snapshot tests must pass. Visual output identical.
-- Benchmark after (~11% expected)
+Step 3b: Ray-octant mirroring — **skipped**
+- Implemented and benchmarked; ~5% regression. The XOR on every bitmask
+  lookup and un-mirroring hit positions cost more than the branch removal
+  saved. GPU warps tend to have coherent ray directions so the branches
+  were already well-predicted. Reverted.
 
-Commit: "Add ray-octant mirroring"
+Step 3c: Ancestor memoization — **skipped**
+- Depends on a restart-from-root traversal pattern that the DDA rewrite
+  in 3a eliminated. DDA already maintains per-level stack state, so
+  ancestor memoization has nothing to recover. Not applicable.
 
-Step 3c: Ancestor memoization
-- Maintain stack of node indices indexed by tree level
-- XOR old/new positions to detect which level changed
-- Recover node index from stack instead of descending from root
-- Test: all snapshot tests must pass. Visual output identical.
-- Benchmark after (~2x expected)
-
-Commit: "Add ancestor memoization"
-
-Step 3d: Bitmask coalescing
-- When a 2x2x2 sub-block of the 4x4x4 grid is entirely empty, skip it
-  in one DDA step instead of four
-- Test: all snapshot tests must pass. Visual output identical.
-- Benchmark after (~21% expected)
-
-Commit: "Add bitmask coalescing for empty cell skipping"
+Step 3d: Bitmask coalescing — **skipped**
+- The DDA in 3a already skips empty cells by checking the bitmask per
+  step. Coalescing 2x2x2 blocks adds bookkeeping that isn't justified
+  at the current 64^3 scene size. May revisit for larger worlds.
