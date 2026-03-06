@@ -1,0 +1,3 @@
+- [ ] Headless benchmark mode: render to offscreen texture without a window so benchmarks can run over SSH or in CI
+- [ ] `stat` subcommand: CLI-friendly benchmark summary per commit with % improvement between commits, variance, min, max, p50, p99
+- [ ] Chart improvements: move commit legend to a sidebar, shift-click to toggle individual commits, smarter color assignment
