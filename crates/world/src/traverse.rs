@@ -2,6 +2,14 @@ use prim::F;
 use prim::Ray;
 use prim::Vec3;
 
+/// no_std-compatible floor for f32.
+#[inline]
+fn floor_f32(x: f32) -> f32 {
+    let i = x as i32;
+    let f = i as f32;
+    if x < f { f - 1.0 } else { f }
+}
+
 /// Bit 31 marks a leaf node.
 pub const LEAF_BIT: u32 = 1 << 31;
 
@@ -449,9 +457,9 @@ pub fn trace_tree64(
         let p = orig + (t_cur + eps) * Vec3::new(1.0 / inv_dir.x, 1.0 / inv_dir.y, 1.0 / inv_dir.z);
 
         // Compute starting cell indices, clamped to [0, 3]
-        let fx = ((p.x - node_ox) / cell_size).floor();
-        let fy = ((p.y - node_oy) / cell_size).floor();
-        let fz = ((p.z - node_oz) / cell_size).floor();
+        let fx = floor_f32((p.x - node_ox) / cell_size);
+        let fy = floor_f32((p.y - node_oy) / cell_size);
+        let fz = floor_f32((p.z - node_oz) / cell_size);
         entry.cx = (fx as i32).clamp(0, 3);
         entry.cy = (fy as i32).clamp(0, 3);
         entry.cz = (fz as i32).clamp(0, 3);
