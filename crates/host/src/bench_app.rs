@@ -84,6 +84,11 @@ fn gpu_info_from_adapter(adapter: &wgpu::Adapter) -> GpuInfo {
 
 /// Git SHA baked in at build time via build.rs.
 const GIT_SHA: &str = env!("GIT_SHA");
+const GIT_DIRTY: &str = env!("GIT_DIRTY");
+
+fn results_dir_name() -> &'static str {
+    if GIT_DIRTY == "true" { "dirty" } else { GIT_SHA }
+}
 
 /// A queued benchmark with its name and definition.
 struct QueuedBenchmark {
@@ -350,7 +355,7 @@ impl BenchApp {
         let gpu_info = self.gpu_info.as_ref().ok_or("No GPU info")?;
         let config = self.config.as_ref().ok_or("No surface config")?;
 
-        let output_dir = PathBuf::from("bench/results").join(GIT_SHA);
+        let output_dir = PathBuf::from("bench/results").join(results_dir_name());
         fs::create_dir_all(&output_dir)?;
 
         let filename_timestamp = self.timestamp.format("%Y-%m-%d-%H-%M-%S");
@@ -632,7 +637,7 @@ async fn run_benchmarks_headless(
             camera_path: camera_path.clone(),
         };
 
-        let output_dir = PathBuf::from("bench/results").join(GIT_SHA);
+        let output_dir = PathBuf::from("bench/results").join(results_dir_name());
         fs::create_dir_all(&output_dir)?;
         let filename_timestamp = timestamp.format("%Y-%m-%d-%H-%M-%S");
         let output_path = output_dir.join(format!("{filename_timestamp}-{name}.jsonl"));

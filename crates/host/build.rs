@@ -32,7 +32,16 @@ fn set_git_sha() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    println!("cargo::rustc-env=GIT_SHA={}", sha);
+    let dirty = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    println!("cargo::rustc-env=GIT_SHA={sha}");
+    println!("cargo::rustc-env=GIT_DIRTY={dirty}");
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
