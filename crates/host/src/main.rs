@@ -19,7 +19,7 @@ fn run_chart() -> Result<(), Box<dyn Error>> {
         return Err("bench/results/ directory not found. Run some benchmarks first.".into());
     }
 
-    let data = voxels_bench::load_all_benchmarks(bench_results_dir)?;
+    let data = box_bench::load_all_benchmarks(bench_results_dir)?;
     if data.is_empty() {
         return Err("No benchmark data found in bench/results/".into());
     }
@@ -33,7 +33,7 @@ fn run_chart() -> Result<(), Box<dyn Error>> {
             .join(", ")
     );
 
-    let svg = voxels_bench::generate_svg(&data);
+    let svg = box_bench::generate_svg(&data);
 
     fs::create_dir_all("bench/charts")?;
     let output_path = "bench/charts/chart.svg";

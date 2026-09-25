@@ -241,6 +241,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "box-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam",
+ "serde",
+ "serde_json",
+ "svg",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,6 +1008,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 name = "host"
 version = "0.1.0"
 dependencies = [
+ "box-bench",
  "bytemuck",
  "chrono",
  "clap",
@@ -1011,7 +1023,6 @@ dependencies = [
  "spirv-builder",
  "toml",
  "tree64",
- "voxels-bench",
  "wgpu",
  "winit",
  "world",
@@ -2975,17 +2986,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "voxels-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glam",
- "serde",
- "serde_json",
- "svg",
-]
 
 [[package]]
 name = "walkdir"

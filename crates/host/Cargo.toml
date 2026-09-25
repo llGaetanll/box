@@ -12,7 +12,7 @@ use-compiled-tools = ["spirv-builder/use-compiled-tools"]
 shared = { path = "../shared" }
 tree64 = { path = "../tree64" }
 world = { path = "../world" }
-voxels-bench = { path = "../voxels-bench" }
+box-bench = { path = "../box-bench" }
 
 log = { workspace = true }
 env_logger = { workspace = true }

@@ -32,7 +32,7 @@ points). Run a benchmark to record frame timings to bench/results/, then use
 - shared: CPU-GPU shared types (ShaderConstants via push constants)
 - tree64: 64-tree spatial data structure (4^3 branching factor octree variant)
 - storage: region-file-based chunk persistence
-- voxels-bench: benchmarking framework with camera paths and chart generation
+- box-bench: benchmarking framework with camera paths and chart generation
 
 **Docs** (docs/):
 - requirements.md: project constraints and goals

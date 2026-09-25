@@ -240,7 +240,7 @@ impl LiveApp {
 
     async fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
         let window_attributes = WindowAttributes::default()
-            .with_title("Voxels")
+            .with_title("Box")
             .with_inner_size(LogicalSize::new(800.0, 600.0));
         let window_box = event_loop.create_window(window_attributes)?;
 

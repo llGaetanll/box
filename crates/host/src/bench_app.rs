@@ -10,10 +10,10 @@ use chrono::Utc;
 use futures::executor::block_on;
 use glam::Vec3;
 use serde::Deserialize;
-use voxels_bench::BenchmarkMetadata;
-use voxels_bench::CameraPath;
-use voxels_bench::FrameRecord;
-use voxels_bench::GpuInfo;
+use box_bench::BenchmarkMetadata;
+use box_bench::CameraPath;
+use box_bench::FrameRecord;
+use box_bench::GpuInfo;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::ElementState;
@@ -185,7 +185,7 @@ impl BenchApp {
 
     async fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
         let window_attributes = WindowAttributes::default()
-            .with_title("Voxels Benchmark")
+            .with_title("Box Benchmark")
             .with_inner_size(LogicalSize::new(800.0, 600.0));
         let window_box = event_loop.create_window(window_attributes)?;
 

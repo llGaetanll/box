@@ -2,7 +2,7 @@ use clap::Parser;
 use clap::Subcommand;
 
 #[derive(Parser)]
-#[command(name = "voxels")]
+#[command(name = "box")]
 #[command(about = "A ray-traced voxel engine using rust-gpu")]
 pub struct Cli {
     #[command(subcommand)]
