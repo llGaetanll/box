@@ -35,6 +35,14 @@ Step 1c: Temporal denoising (SVGF-style)
 - Edit constraint: reprojection naturally handles small edits (new
   geometry = disoccluded = no history = falls back to current sample).
   Large edits may cause a brief noisy frame, which is acceptable.
+- Reprojection half done (2026-09-25, commit 537ad4a): each pixel stores
+  its first hit position, face and voxel value alongside its color and
+  sample count; the next frame projects its own first hit into the
+  previous camera and blends with the four surrounding history pixels
+  that saw the same face on the same plane, capped at 32 samples while
+  moving. No spatial filter yet. Edits will need the history for the
+  changed voxels invalidated, which the face-and-plane test does not
+  catch when a voxel is removed and the face behind it is coplanar.
 
 Step 1d: Better RNG (blue noise / Sobol)
 - Replace PCG-based PRNG with blue noise texture or Sobol sequence

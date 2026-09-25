@@ -146,3 +146,24 @@ cannot be re-measured without redoing it.
 Headless runs of one binary are not always stable either: 5ffa9e1 gave
 medians of 5.5ms in some runs and 8-9ms in others, with a deterministic
 shader. Most likely GPU clocks. Compare runs repeated at least three times.
+
+
+**Traversal, second attempt** (2026-09-25, commit 7e176c9)
+
+The DDA of step 3a kept a stack of 24 entries of 14 words each, indexed
+by the current depth. That is 1.3KB per ray, which the GPU cannot keep in
+registers and spills to local memory, and every step read and wrote it.
+That, not the order children were visited in, was where the time went.
+
+The rewrite tracks the ray as an integer voxel coordinate. The cell at any
+level is a two-bit slice of it, the node containing it is the bits above,
+and the level a step leaves is the highest bit the step changed. The only
+per-level state is a stack of node indices. Headless 1920x1080 on an RTX
+5090, three runs each, p50: 5.4ms -> 0.40ms. Same picture to within
+rounding, checked with `bench --headless --save-frames` before and after.
+
+The remaining ideas from the notes (octant mirroring, bitmask
+coalescing, beam pre-pass, LOD termination) are still untried on the new
+traversal. At 0.4ms per 1080p frame the tracer is no longer what limits
+live mode; the next cost is the history read and write that reprojection
+added (0.67ms with it on).

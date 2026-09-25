@@ -11,9 +11,11 @@ Requires nightly Rust (see rust-toolchain.toml).
 ```
 cargo run             # open the live renderer (default)
 cargo run -- live     # same as above, explicitly
+cargo run -- live --samples 4  # trace 4 paths per pixel per frame instead of 1
 cargo run -- bench    # run all benchmarks in bench/configs/
 cargo run -- bench <name>  # run a specific benchmark (e.g. menger_sponge)
 cargo run -- bench --headless  # render offscreen, no window
+cargo run -- bench --headless --save-frames  # also save frames as PPM images
 cargo run -- chart    # generate SVG charts from benchmark results
 cargo run -- stats    # print frame time percentiles per commit
 ```
@@ -22,11 +24,31 @@ cargo run -- stats    # print frame time percentiles per commit
 around, Escape or Q to quit.
 
 **Benchmarking**: configs live in bench/configs/ as TOML files. Each defines a
-scene, frame count, render size, and a camera path (position + look-at spline control
-points). Run a benchmark to record frame timings to bench/results/, then use
-`chart` to produce an SVG in bench/charts/. Add `--headless` to render offscreen
-at exactly the config's `width` and `height`, where a window may be resized by
-the window manager.
+scene, frame count, render size, paths per pixel (`samples`, default 1), and a
+camera path (position + look-at spline control points). Run a benchmark to
+record frame timings to bench/results/, then use `chart` to produce an SVG in
+bench/charts/. Add `--headless` to render offscreen at exactly the config's
+`width` and `height`, where a window may be resized by the window manager.
+Frame times vary run to run, so repeat a benchmark three times and compare
+medians. Results are filed under the current commit's SHA, so commit before
+measuring or the runs of different code end up in one place.
+
+`--save-frames` writes every 100th frame and the last one to bench/frames/ as
+PPM files, which ImageMagick can convert and diff:
+
+```
+magick bench/frames/<sha>/menger_sponge-0200.ppm frame.png
+magick compare -metric MAE before.png after.png null:
+```
+
+A change meant to be faster should draw the same picture; one meant to be
+less noisy should draw a cleaner one.
+
+**Rendering**: one path per pixel per frame, accumulated over frames. While the
+camera is still, each pixel sums its own samples without limit. While it moves,
+each pixel reprojects its first hit into the previous frame and blends into
+the history found there, if the same voxel face was seen, up to a cap of 32
+samples so the resampling blur does not build up.
 
 **Crates** (all under crates/, named `<category>-<role>`):
 - app-main: desktop application -- window, input, camera, GPU setup, render loop
