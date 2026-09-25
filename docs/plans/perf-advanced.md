@@ -57,7 +57,7 @@ Step 2a: LOD via early termination
   from push constants)
 
 Step 2b: Chunk streaming
-- Split the world into chunks (already defined in the storage crate:
+- Split the world into chunks (already defined in the voxel-store crate:
   64^3 per chunk). Only upload visible/nearby chunks to GPU.
 - Maintain a chunk atlas in a large GPU buffer, LRU-evict distant chunks
 - Edit constraint: edited chunks are re-uploaded. The hot path (single

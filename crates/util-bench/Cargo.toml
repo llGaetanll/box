@@ -1,0 +1,11 @@
+[package]
+name = "util-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+svg = "0.18"

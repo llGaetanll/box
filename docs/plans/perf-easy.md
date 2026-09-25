@@ -4,9 +4,9 @@ Run `cargo run -- bench menger_sponge` after each step and record results.
 
 **Step 0 — End-to-end path tracing tests** (done)
 
-Tests live in `shader/tests/trace.rs`. The core path tracing loop was extracted
+Tests live in `gpu-shader/tests/trace.rs`. The core path tracing loop was extracted
 into `shader::trace_color` so it can be called from CPU tests with a fixed RNG
-seed. Run `cargo test -p shader` to verify.
+seed. Run `cargo test -p gpu-shader` to verify.
 
 Tests:
 - Exact color snapshots for a voxel hit from all 6 axis directions
@@ -19,7 +19,7 @@ Tests:
 
 **Phase 1 — Path tracing quick wins (shader-only)**
 
-Each of these is a small change to `shader/src/lib.rs`. No host or data
+Each of these is a small change to `gpu-shader/src/lib.rs`. No host or data
 structure changes. Visual correctness is verified by running the live renderer.
 
 Step 1a: Tone mapping + gamma correction
@@ -89,7 +89,7 @@ Commit: "Add subpixel jitter for anti-aliased accumulation"
 **Phase 3 — DDA traversal rewrite**
 
 This replaces the core traversal loop. The step 0 tests are the safety net.
-Run `cargo test -p shader` after every sub-step to verify snapshot colors
+Run `cargo test -p gpu-shader` after every sub-step to verify snapshot colors
 are unchanged.
 
 Step 3a: DDA within tree64 nodes

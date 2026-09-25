@@ -1,0 +1,20 @@
+[package]
+name = "gpu-shader"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+gpu-wire = { path = "../gpu-wire" }
+spirv-std = { workspace = true }
+gpu-prim = { path = "../gpu-prim" }
+voxel-octree = { path = "../voxel-octree", default-features = false }
+
+[dev-dependencies]
+voxel-tree64 = { path = "../voxel-tree64" }
+bytemuck = { workspace = true }
+
+[lints]
+workspace = true

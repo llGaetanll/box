@@ -24,15 +24,15 @@ scene, frame count, and a camera path (position + look-at spline control
 points). Run a benchmark to record frame timings to bench/results/, then use
 `chart` to produce an SVG in bench/charts/.
 
-**Crates** (all under crates/):
-- host: desktop application -- window, input, camera, GPU setup, render loop
-- shader: SPIR-V fragment/vertex shaders (no_std, runs on GPU)
-- world: sparse octree and GPU ray traversal (dual-compile: CPU std, GPU no_std)
-- prim: math primitives, ray, AABB, PRNG (dual-compile)
-- shared: CPU-GPU shared types (ShaderConstants via push constants)
-- tree64: 64-tree spatial data structure (4^3 branching factor octree variant)
-- storage: region-file-based chunk persistence
-- box-bench: benchmarking framework with camera paths and chart generation
+**Crates** (all under crates/, named `<category>-<role>`):
+- app-main: desktop application -- window, input, camera, GPU setup, render loop
+- gpu-shader: SPIR-V fragment/vertex shaders (no_std, runs on GPU)
+- gpu-wire: CPU-GPU shared types (ShaderConstants via push constants)
+- gpu-prim: math primitives, ray, AABB, PRNG (dual-compile)
+- voxel-octree: sparse octree and GPU ray traversal (dual-compile: CPU std, GPU no_std)
+- voxel-tree64: 64-tree spatial data structure (4^3 branching factor octree variant)
+- voxel-store: region-file-based chunk persistence
+- util-bench: benchmarking framework with camera paths and chart generation
 
 **Docs** (docs/):
 - requirements.md: project constraints and goals

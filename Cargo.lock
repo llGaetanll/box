@@ -151,6 +151,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
+name = "app-main"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "chrono",
+ "clap",
+ "env_logger",
+ "futures",
+ "glam",
+ "gpu-wire",
+ "log",
+ "ouroboros",
+ "serde",
+ "serde_json",
+ "spirv-builder",
+ "toml",
+ "util-bench",
+ "voxel-octree",
+ "voxel-tree64",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "ar"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -238,17 +262,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f"
 dependencies = [
  "objc2",
-]
-
-[[package]]
-name = "box-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glam",
- "serde",
- "serde_json",
- "svg",
 ]
 
 [[package]]
@@ -952,6 +965,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-prim"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "spirv-std",
+]
+
+[[package]]
+name = "gpu-shader"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "gpu-prim",
+ "gpu-wire",
+ "spirv-std",
+ "voxel-octree",
+ "voxel-tree64",
+]
+
+[[package]]
+name = "gpu-wire"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1003,30 +1043,6 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
-
-[[package]]
-name = "host"
-version = "0.1.0"
-dependencies = [
- "box-bench",
- "bytemuck",
- "chrono",
- "clap",
- "env_logger",
- "futures",
- "glam",
- "log",
- "ouroboros",
- "serde",
- "serde_json",
- "shared",
- "spirv-builder",
- "toml",
- "tree64",
- "wgpu",
- "winit",
- "world",
-]
 
 [[package]]
 name = "icu_collections"
@@ -1949,14 +1965,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
-name = "prim"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "spirv-std",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2344,31 +2352,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "shader"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "prim",
- "shared",
- "spirv-std",
- "tree64",
- "world",
-]
-
-[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shared"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
 ]
 
 [[package]]
@@ -2550,14 +2539,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "storage"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "tree64",
-]
 
 [[package]]
 name = "strict-num"
@@ -2897,15 +2878,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree64"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "bytemuck",
- "glam",
-]
-
-[[package]]
 name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2976,6 +2948,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "util-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam",
+ "serde",
+ "serde_json",
+ "svg",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2986,6 +2969,30 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voxel-octree"
+version = "0.1.0"
+dependencies = [
+ "gpu-prim",
+]
+
+[[package]]
+name = "voxel-store"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "voxel-tree64",
+]
+
+[[package]]
+name = "voxel-tree64"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "bytemuck",
+ "glam",
+]
 
 [[package]]
 name = "walkdir"
@@ -3653,13 +3660,6 @@ name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
-
-[[package]]
-name = "world"
-version = "0.1.0"
-dependencies = [
- "prim",
-]
 
 [[package]]
 name = "writeable"

@@ -1,0 +1,13 @@
+[package]
+name = "voxel-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+voxel-tree64 = { path = "../voxel-tree64" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
