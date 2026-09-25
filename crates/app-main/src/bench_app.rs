@@ -537,6 +537,7 @@ impl ApplicationHandler for BenchApp {
 fn run_headless(
     benchmarks: Vec<QueuedBenchmark>,
     timestamp: DateTime<Utc>,
+    save_frames: bool,
 ) -> Result<(), Box<dyn Error>> {
     let instance = GpuContext::create_instance();
     let gpu = block_on(GpuContext::new(instance, None))?;
@@ -555,13 +556,22 @@ fn run_headless(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: HEADLESS_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let frame_count = session.camera_path.frame_count();
         while !session.current_done() {
+            let frame = session.frame_records.len() as u32;
             session.render_frame(Instant::now(), &view, width, height);
+
+            if save_frames && (frame % 100 == 0 || frame + 1 == frame_count) {
+                match session.save_frame(&target, frame) {
+                    Ok(path) => log::info!("Saved frame to {}", path.display()),
+                    Err(e) => log::error!("Failed to save frame {frame}: {e}"),
+                }
+            }
         }
 
         if !session.finish_current([width, height]) {
@@ -570,12 +580,87 @@ fn run_headless(
     }
 }
 
-pub fn run_bench(name: String, headless: bool) -> Result<(), Box<dyn Error>> {
-    let def = BenchmarkFile::load(&name)?;
-    run_benchmarks(vec![QueuedBenchmark { name, def }], headless)
+impl Session {
+    /// Read `target` back and write it as a binary PPM to
+    /// `bench/frames/<sha>/<benchmark>-<frame>.ppm`. Blocks on the GPU, so it
+    /// is only for frames whose timing has already been recorded.
+    fn save_frame(&self, target: &wgpu::Texture, frame: u32) -> Result<PathBuf, Box<dyn Error>> {
+        let (width, height) = self.size();
+        let bytes_per_pixel = 4u32;
+        // Buffer copies need rows padded to a 256 byte multiple
+        let unpadded = width * bytes_per_pixel;
+        let padded = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+
+        let readback = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame_readback"),
+            size: (padded * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.gpu.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.gpu.device.poll(wgpu::PollType::Wait)?;
+        rx.recv()??;
+
+        let output_dir = PathBuf::from("bench/frames").join(GIT_SHA);
+        fs::create_dir_all(&output_dir)?;
+        let path = output_dir.join(format!("{}-{frame:04}.ppm", self.current.name));
+
+        // The target is BGRA and PPM wants RGB
+        let mapped = slice.get_mapped_range();
+        let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+        ppm.reserve((width * height * 3) as usize);
+        for row in mapped.chunks(padded as usize) {
+            for px in row[..unpadded as usize].chunks(4) {
+                ppm.extend_from_slice(&[px[2], px[1], px[0]]);
+            }
+        }
+        drop(mapped);
+        readback.unmap();
+
+        fs::write(&path, ppm)?;
+        Ok(path)
+    }
 }
 
-pub fn run_all_benchmarks(headless: bool) -> Result<(), Box<dyn Error>> {
+pub fn run_bench(name: String, headless: bool, save_frames: bool) -> Result<(), Box<dyn Error>> {
+    let def = BenchmarkFile::load(&name)?;
+    run_benchmarks(vec![QueuedBenchmark { name, def }], headless, save_frames)
+}
+
+pub fn run_all_benchmarks(headless: bool, save_frames: bool) -> Result<(), Box<dyn Error>> {
     let benchmarks_dir = PathBuf::from("bench/configs");
     let mut benchmark_names: Vec<String> = fs::read_dir(&benchmarks_dir)
         .map_err(|e| format!("Failed to read bench/configs directory: {}", e))?
@@ -608,12 +693,19 @@ pub fn run_all_benchmarks(headless: bool) -> Result<(), Box<dyn Error>> {
         benchmarks.push(QueuedBenchmark { name, def });
     }
 
-    run_benchmarks(benchmarks, headless)
+    run_benchmarks(benchmarks, headless, save_frames)
 }
 
-fn run_benchmarks(benchmarks: Vec<QueuedBenchmark>, headless: bool) -> Result<(), Box<dyn Error>> {
+fn run_benchmarks(
+    benchmarks: Vec<QueuedBenchmark>,
+    headless: bool,
+    save_frames: bool,
+) -> Result<(), Box<dyn Error>> {
     if headless {
-        return run_headless(benchmarks, Utc::now());
+        return run_headless(benchmarks, Utc::now(), save_frames);
+    }
+    if save_frames {
+        log::warn!("--save-frames only applies to headless runs; ignoring");
     }
 
     let event_loop = EventLoop::new()?;

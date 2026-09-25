@@ -53,11 +53,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(Commands::Bench {
             name: Some(name),
             headless,
-        }) => bench_app::run_bench(name, headless),
+            save_frames,
+        }) => bench_app::run_bench(name, headless, save_frames),
         Some(Commands::Bench {
             name: None,
             headless,
-        }) => bench_app::run_all_benchmarks(headless),
+            save_frames,
+        }) => bench_app::run_all_benchmarks(headless, save_frames),
         Some(Commands::Chart) => run_chart(),
         Some(Commands::Stats) => stats::run_stats(),
         None => live_app::run_live(),

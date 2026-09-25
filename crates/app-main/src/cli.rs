@@ -23,6 +23,12 @@ pub enum Commands {
         /// config asks for.
         #[arg(long)]
         headless: bool,
+
+        /// Headless only: save every 100th frame and the last one of each
+        /// benchmark as a PPM image under bench/frames/<sha>/, to check by eye
+        /// that a faster renderer still draws the same picture.
+        #[arg(long)]
+        save_frames: bool,
     },
     /// Generate SVG charts from benchmark results
     Chart,
