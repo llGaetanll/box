@@ -29,6 +29,10 @@ pub struct BenchmarkMetadata {
     pub git_sha: String,
     pub scene: String,
     pub resolution: [u32; 2],
+    /// Rendered offscreen rather than into a window. Absent from runs recorded
+    /// before headless mode existed, all of which had a window.
+    #[serde(default)]
+    pub headless: bool,
     pub gpu: GpuInfo,
     pub camera_path: CameraPath,
 }

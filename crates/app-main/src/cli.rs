@@ -18,6 +18,11 @@ pub enum Commands {
         /// Benchmark definition name (loads from bench/configs/<name>.toml).
         /// If not specified, runs all benchmarks in the bench/configs/ directory.
         name: Option<String>,
+
+        /// Render offscreen instead of opening a window, at exactly the size each
+        /// config asks for.
+        #[arg(long)]
+        headless: bool,
     },
     /// Generate SVG charts from benchmark results
     Chart,

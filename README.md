@@ -13,6 +13,7 @@ cargo run             # open the live renderer (default)
 cargo run -- live     # same as above, explicitly
 cargo run -- bench    # run all benchmarks in bench/configs/
 cargo run -- bench <name>  # run a specific benchmark (e.g. menger_sponge)
+cargo run -- bench --headless  # render offscreen, no window
 cargo run -- chart    # generate SVG charts from benchmark results
 ```
 
@@ -20,9 +21,11 @@ cargo run -- chart    # generate SVG charts from benchmark results
 around, Escape or Q to quit.
 
 **Benchmarking**: configs live in bench/configs/ as TOML files. Each defines a
-scene, frame count, and a camera path (position + look-at spline control
+scene, frame count, render size, and a camera path (position + look-at spline control
 points). Run a benchmark to record frame timings to bench/results/, then use
-`chart` to produce an SVG in bench/charts/.
+`chart` to produce an SVG in bench/charts/. Add `--headless` to render offscreen
+at exactly the config's `width` and `height`, where a window may be resized by
+the window manager.
 
 **Crates** (all under crates/, named `<category>-<role>`):
 - app-main: desktop application -- window, input, camera, GPU setup, render loop

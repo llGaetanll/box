@@ -1,5 +1,7 @@
 scene = "main_fs"
 frame_count = 300
+width = 1920
+height = 1080
 
 # Camera orbits around the Menger sponge, centered at (32, 32, 32)
 position = [
