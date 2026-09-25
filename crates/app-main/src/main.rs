@@ -8,6 +8,7 @@ mod bench_app;
 mod cli;
 mod gpu;
 mod live_app;
+mod stats;
 mod window_surface;
 
 use cli::Cli;
@@ -58,6 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             headless,
         }) => bench_app::run_all_benchmarks(headless),
         Some(Commands::Chart) => run_chart(),
+        Some(Commands::Stats) => stats::run_stats(),
         None => live_app::run_live(),
     }
 }

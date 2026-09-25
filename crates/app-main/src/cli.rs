@@ -26,4 +26,6 @@ pub enum Commands {
     },
     /// Generate SVG charts from benchmark results
     Chart,
+    /// Print frame time percentiles for every recorded benchmark run
+    Stats,
 }

@@ -1,5 +1,6 @@
 mod camera_path;
 mod chart;
+mod percentiles;
 mod spline;
 mod types;
 
@@ -14,6 +15,7 @@ use anyhow::Result;
 pub use camera_path::CameraFrame;
 pub use camera_path::CameraPath;
 pub use chart::generate_svg;
+pub use percentiles::Percentiles;
 pub use spline::CatmullRomSpline;
 pub use types::BenchmarkMetadata;
 pub use types::FrameRecord;
@@ -38,6 +40,7 @@ pub struct ShaRun {
     pub sha: String,
     pub timestamp: String,
     pub frames: Vec<FrameData>,
+    pub metadata: BenchmarkMetadata,
 }
 
 /// All runs for a single benchmark, grouped by SHA.
@@ -99,7 +102,14 @@ fn parse_benchmark_filename(filename: &str) -> Option<BenchmarkFilename> {
 /// Returns a list of BenchmarkData, each containing runs sorted by timestamp (oldest first).
 /// Only includes the most recent run per SHA per benchmark.
 pub fn load_all_benchmarks(bench_results_dir: &Path) -> Result<Vec<BenchmarkData>> {
-    let mut all_runs: HashMap<String, HashMap<String, (String, Vec<FrameData>)>> = HashMap::new();
+    /// One loaded run, keyed by benchmark name and then SHA while collecting.
+    struct LoadedRun {
+        timestamp: String,
+        frames: Vec<FrameData>,
+        metadata: BenchmarkMetadata,
+    }
+
+    let mut all_runs: HashMap<String, HashMap<String, LoadedRun>> = HashMap::new();
 
     for sha_entry in fs::read_dir(bench_results_dir)? {
         let sha_entry = sha_entry?;
@@ -134,13 +144,19 @@ pub fn load_all_benchmarks(bench_results_dir: &Path) -> Result<Vec<BenchmarkData
             let by_sha = all_runs.entry(parsed.name.clone()).or_default();
             let entry = by_sha.entry(sha.clone());
 
+            let loaded = LoadedRun {
+                timestamp: parsed.timestamp,
+                frames: run.frames,
+                metadata: run.metadata,
+            };
+
             match entry {
                 std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert((parsed.timestamp, run.frames));
+                    v.insert(loaded);
                 }
                 std::collections::hash_map::Entry::Occupied(mut o) => {
-                    if parsed.timestamp > o.get().0 {
-                        o.insert((parsed.timestamp, run.frames));
+                    if loaded.timestamp > o.get().timestamp {
+                        o.insert(loaded);
                     }
                 }
             }
@@ -152,10 +168,11 @@ pub fn load_all_benchmarks(bench_results_dir: &Path) -> Result<Vec<BenchmarkData
         .map(|(name, by_sha)| {
             let mut runs: Vec<ShaRun> = by_sha
                 .into_iter()
-                .map(|(sha, (timestamp, frames))| ShaRun {
+                .map(|(sha, run)| ShaRun {
                     sha,
-                    timestamp,
-                    frames,
+                    timestamp: run.timestamp,
+                    frames: run.frames,
+                    metadata: run.metadata,
                 })
                 .collect();
             runs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));

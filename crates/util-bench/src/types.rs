@@ -22,7 +22,7 @@ impl GpuInfo {
 }
 
 /// Benchmark metadata written as the first line of the JSONL output.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BenchmarkMetadata {
     pub version: u32,
     pub timestamp: String,

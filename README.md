@@ -15,6 +15,7 @@ cargo run -- bench    # run all benchmarks in bench/configs/
 cargo run -- bench <name>  # run a specific benchmark (e.g. menger_sponge)
 cargo run -- bench --headless  # render offscreen, no window
 cargo run -- chart    # generate SVG charts from benchmark results
+cargo run -- stats    # print frame time percentiles per commit
 ```
 
 **Live renderer controls**: WASD to move, Space/C for up/down, mouse to look
