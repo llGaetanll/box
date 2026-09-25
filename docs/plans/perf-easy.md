@@ -116,3 +116,33 @@ Step 3d: Bitmask coalescing — **skipped**
 - The DDA in 3a already skips empty cells by checking the bitmask per
   step. Coalescing 2x2x2 blocks adds bookkeeping that isn't justified
   at the current 64^3 scene size. May revisit for larger worlds.
+
+
+**Re-measured** (2026-09-25)
+
+The numbers recorded while working through this plan were taken with vsync
+on and without waiting on the GPU, in a window whose size the window manager
+picked. Some frames measured queue submission only (76µs at 3800x2075), and
+the rest were pulled toward multiples of the refresh interval. They are not
+comparable to each other.
+
+Each commit's shader, prim and world crates were rebuilt against the current
+harness and run with `bench --headless` at 1920x1080 on an RTX 5090, three
+runs each. Median frame time (p50):
+
+- 2dbea7a (baseline): 8.6ms
+- 6a43069 tone mapping: 8.5ms, no change
+- 2f080e6 cosine sampling: 8.5ms, no change
+- 5ffa9e1 Russian roulette: 5.5ms, -35%. The only real win
+- 1b37f32, e240146, 55e6976 accumulation, seed, jitter: 5.5ms, no change
+- 8ac4a3e DDA (a91bd5c does not compile to SPIR-V on its own): 5.4ms, about
+  -2% on the median and -6% on the mean
+
+DDA was expected to be the biggest improvement and was a small one. Step 3b's
+5% regression was measured with the old harness and is within its noise, so
+the reason for skipping it does not hold. It was never committed, so it
+cannot be re-measured without redoing it.
+
+Headless runs of one binary are not always stable either: 5ffa9e1 gave
+medians of 5.5ms in some runs and 8-9ms in others, with a deterministic
+shader. Most likely GPU clocks. Compare runs repeated at least three times.
