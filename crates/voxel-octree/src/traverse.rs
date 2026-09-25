@@ -2,14 +2,6 @@ use gpu_prim::F;
 use gpu_prim::Ray;
 use gpu_prim::Vec3;
 
-/// no_std-compatible floor for f32.
-#[inline]
-fn floor_f32(x: f32) -> f32 {
-    let i = x as i32;
-    let f = i as f32;
-    if x < f { f - 1.0 } else { f }
-}
-
 /// Bit 31 marks a leaf node.
 pub const LEAF_BIT: u32 = 1 << 31;
 
@@ -339,11 +331,31 @@ fn xyz_to_bit(x: u32, y: u32, z: u32) -> u32 {
     x + y * 4 + z * 16
 }
 
+/// Most levels a tree64 can have and still be traversed. 4^8 voxels per axis.
+const MAX_LEVELS: usize = 8;
+
+/// Steps a single ray may take before it is declared a miss. A guard against
+/// a degenerate ray looping, not a budget a real one gets close to.
+const MAX_STEPS: u32 = 1024;
+
+/// A direction component with a smaller magnitude than this is treated as
+/// this, so its reciprocal stays finite and the boundary times stay ordered.
+const MIN_DIR: F = 1e-8;
+
 /// Trace a ray through a tree64 (64-ary voxel tree) using DDA traversal.
 ///
 /// Each tree level is a 4×4×4 grid. The ray is stepped through each grid
-/// in front-to-back order using Amanatides-Woo DDA. On first leaf hit the
-/// traversal terminates immediately.
+/// in front-to-back order using Amanatides-Woo DDA, so the first occupied
+/// voxel it reaches is the nearest one and traversal stops there.
+///
+/// The ray's position is tracked as the integer coordinate of the voxel it
+/// is in. Because a level's cell size is a power of four, the cell the ray
+/// occupies at any level is a two bit slice of that coordinate, and the node
+/// containing it is the bits above that. Stepping across a cell boundary
+/// changes the coordinate along one axis; XORing it with the previous value
+/// says exactly which levels the ray has left, and the node for the level it
+/// lands in is recovered from a per-level stack of node indices. Nothing else
+/// is kept per level, so the traversal state fits in registers.
 ///
 /// - `nodes`: the node array as `&[u32]` (bytemuck-cast from `&[Node]`, 3 u32s per node)
 /// - `data`: the voxel data as `&[u32]` (packed u8 values, 4 per u32)
@@ -364,237 +376,170 @@ pub fn trace_tree64(
     t_max: F,
     hit: &mut VoxelHit,
 ) -> bool {
-    if nodes.is_empty() {
+    if nodes.is_empty() || num_levels == 0 || num_levels as usize > MAX_LEVELS {
         return false;
     }
 
-    // World size: 4^num_levels per axis
-    let mut world_size: F = 1.0;
-    let mut i = 0u32;
-    while i < num_levels {
-        world_size *= 4.0;
-        i += 1;
-    }
+    // World is 4^num_levels voxels per axis, so 2 bits of coordinate per level
+    let world_bits = 2 * num_levels;
+    let world_max = (1i32 << world_bits) - 1;
+    let world_size = (1u32 << world_bits) as F;
 
-    // Intersect ray with the world AABB [0, world_size]^3
-    let (t_enter, t_exit, _) = ray_aabb(ray, 0.0, 0.0, 0.0, world_size, world_size, world_size);
-
+    let (t_enter, t_exit, enter_axis) =
+        ray_aabb(ray, 0.0, 0.0, 0.0, world_size, world_size, world_size);
     let t_enter = t_enter.max(t_min);
     let t_exit = t_exit.min(t_max);
-
     if t_enter >= t_exit {
-        return false;
-    }
-
-    let (root_is_leaf, _, root_mask_lo, root_mask_hi) = read_node(nodes, root_index);
-    if root_mask_lo == 0 && root_mask_hi == 0 {
         return false;
     }
 
     let orig = ray.orig();
     let dir = ray.dir();
 
-    // Precompute inverse direction and step signs for DDA
-    let inv_dir = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
-    let step_x: i32 = if dir.x >= 0.0 { 1 } else { -1 };
-    let step_y: i32 = if dir.y >= 0.0 { 1 } else { -1 };
-    let step_z: i32 = if dir.z >= 0.0 { 1 } else { -1 };
+    // A zero component would make its boundary times NaN, which compares false
+    // against everything and breaks the choice of axis to step along
+    let dx = if dir.x.abs() < MIN_DIR {
+        if dir.x < 0.0 { -MIN_DIR } else { MIN_DIR }
+    } else {
+        dir.x
+    };
+    let dy = if dir.y.abs() < MIN_DIR {
+        if dir.y < 0.0 { -MIN_DIR } else { MIN_DIR }
+    } else {
+        dir.y
+    };
+    let dz = if dir.z.abs() < MIN_DIR {
+        if dir.z < 0.0 { -MIN_DIR } else { MIN_DIR }
+    } else {
+        dir.z
+    };
+    let inv_dx = 1.0 / dx;
+    let inv_dy = 1.0 / dy;
+    let inv_dz = 1.0 / dz;
+    let pos_x = dx >= 0.0;
+    let pos_y = dy >= 0.0;
+    let pos_z = dz >= 0.0;
 
-    // Stack for hierarchical DDA traversal
-    struct StackEntry {
-        node_index: u32,
-        // Origin of this node's grid in world space
-        ox: F,
-        oy: F,
-        oz: F,
-        // Size of each child cell at this level
-        cell_size: F,
-        // Current DDA cell position (0..3 each)
-        cx: i32,
-        cy: i32,
-        cz: i32,
-        // DDA t values for next boundary crossing in each axis
-        t_next_x: F,
-        t_next_y: F,
-        t_next_z: F,
-        // DDA t increment per cell in each axis
-        t_delta_x: F,
-        t_delta_y: F,
-        t_delta_z: F,
-        // t value where ray exits this node
-        t_exit: F,
-    }
+    // Voxel the ray is in at t. On the world's face the coordinate may round
+    // to the face itself, which the clamp folds back inside.
+    let mut t = t_enter;
+    let mut axis = enter_axis;
+    let px = orig.x + t * dir.x;
+    let py = orig.y + t * dir.y;
+    let pz = orig.z + t * dir.z;
+    let mut ix = (px as i32).clamp(0, world_max);
+    let mut iy = (py as i32).clamp(0, world_max);
+    let mut iz = (pz as i32).clamp(0, world_max);
 
-    let mut stack = [const {
-        StackEntry {
-            node_index: 0,
-            ox: 0.0, oy: 0.0, oz: 0.0,
-            cell_size: 0.0,
-            cx: 0, cy: 0, cz: 0,
-            t_next_x: 0.0, t_next_y: 0.0, t_next_z: 0.0,
-            t_delta_x: 0.0, t_delta_y: 0.0, t_delta_z: 0.0,
-            t_exit: 0.0,
-        }
-    }; MAX_DEPTH];
+    // stack[l] is the node at level l for every level above the current one
+    let mut stack = [0u32; MAX_LEVELS];
+    let mut level: u32 = 0;
+    let mut node_index = root_index;
+    let (mut is_leaf, mut ptr, mut mask_lo, mut mask_hi) = read_node(nodes, node_index);
 
-    // Initialize DDA state for a node: compute starting cell and t values
-    // `t_cur` is the t at which the ray enters this node.
-    #[inline]
-    fn init_dda(
-        orig: Vec3, inv_dir: Vec3, step_x: i32, step_y: i32, step_z: i32,
-        node_ox: F, node_oy: F, node_oz: F,
-        cell_size: F, t_cur: F, node_t_exit: F,
-        entry: &mut StackEntry,
-    ) {
-        entry.cell_size = cell_size;
-        entry.ox = node_ox;
-        entry.oy = node_oy;
-        entry.oz = node_oz;
-        entry.t_exit = node_t_exit;
+    let mut steps = 0u32;
+    while steps < MAX_STEPS {
+        steps += 1;
 
-        // Position where ray enters this node (nudge slightly inside)
-        let eps = cell_size * 1e-4;
-        let p = orig + (t_cur + eps) * Vec3::new(1.0 / inv_dir.x, 1.0 / inv_dir.y, 1.0 / inv_dir.z);
-
-        // Compute starting cell indices, clamped to [0, 3]
-        let fx = floor_f32((p.x - node_ox) / cell_size);
-        let fy = floor_f32((p.y - node_oy) / cell_size);
-        let fz = floor_f32((p.z - node_oz) / cell_size);
-        entry.cx = (fx as i32).clamp(0, 3);
-        entry.cy = (fy as i32).clamp(0, 3);
-        entry.cz = (fz as i32).clamp(0, 3);
-
-        // t values at next cell boundaries
-        let bound_x = node_ox + (if step_x > 0 { entry.cx + 1 } else { entry.cx }) as F * cell_size;
-        let bound_y = node_oy + (if step_y > 0 { entry.cy + 1 } else { entry.cy }) as F * cell_size;
-        let bound_z = node_oz + (if step_z > 0 { entry.cz + 1 } else { entry.cz }) as F * cell_size;
-
-        entry.t_next_x = (bound_x - orig.x) * inv_dir.x;
-        entry.t_next_y = (bound_y - orig.y) * inv_dir.y;
-        entry.t_next_z = (bound_z - orig.z) * inv_dir.z;
-
-        // t increment per cell
-        entry.t_delta_x = (cell_size * inv_dir.x).abs();
-        entry.t_delta_y = (cell_size * inv_dir.y).abs();
-        entry.t_delta_z = (cell_size * inv_dir.z).abs();
-    }
-
-    // Push root node
-    let root_cell_size = if root_is_leaf { 1.0 } else { world_size / 4.0 };
-    init_dda(
-        orig, inv_dir, step_x, step_y, step_z,
-        0.0, 0.0, 0.0,
-        root_cell_size, t_enter, t_exit,
-        &mut stack[0],
-    );
-    stack[0].node_index = root_index;
-    let mut sp: usize = 1;
-
-    while sp > 0 {
-        let top = sp - 1;
-
-        // Check if current cell is out of bounds (DDA stepped outside 4×4×4 grid)
-        if stack[top].cx < 0 || stack[top].cx > 3
-            || stack[top].cy < 0 || stack[top].cy > 3
-            || stack[top].cz < 0 || stack[top].cz > 3
-        {
-            sp -= 1;
-            continue;
-        }
-
-        let node_index = stack[top].node_index;
-        let cx = stack[top].cx as u32;
-        let cy = stack[top].cy as u32;
-        let cz = stack[top].cz as u32;
-        let cell_size = stack[top].cell_size;
-        let ox = stack[top].ox;
-        let oy = stack[top].oy;
-        let oz = stack[top].oz;
-
-        // Compute t_enter for the current cell from the DDA state
-        // It's the max of t_next minus t_delta for each axis, but simpler
-        // to just use the cell AABB entry. We use the minimum of t_next values
-        // as t_exit for this cell.
-        let t_next_x = stack[top].t_next_x;
-        let t_next_y = stack[top].t_next_y;
-        let t_next_z = stack[top].t_next_z;
-        // Advance DDA to next cell (for the next iteration at this level)
-        // Step along the axis with the smallest t_next
-        if t_next_x <= t_next_y && t_next_x <= t_next_z {
-            stack[top].cx += step_x;
-            stack[top].t_next_x += stack[top].t_delta_x;
-        } else if t_next_y <= t_next_z {
-            stack[top].cy += step_y;
-            stack[top].t_next_y += stack[top].t_delta_y;
-        } else {
-            stack[top].cz += step_z;
-            stack[top].t_next_z += stack[top].t_delta_z;
-        }
-
+        // Cell of the current node that the ray is in
+        let shift = 2 * (num_levels - 1 - level);
+        let cx = ((ix >> shift) & 3) as u32;
+        let cy = ((iy >> shift) & 3) as u32;
+        let cz = ((iz >> shift) & 3) as u32;
         let bit = xyz_to_bit(cx, cy, cz);
-        let (is_leaf, ptr, mask_lo, mask_hi) = read_node(nodes, node_index);
 
-        // Check if this cell is occupied
-        if !mask_test(mask_lo, mask_hi, bit) {
+        let cell = 1i32 << shift;
+        let cell_mask = !(cell - 1);
+        let min_x = ix & cell_mask;
+        let min_y = iy & cell_mask;
+        let min_z = iz & cell_mask;
+
+        if mask_test(mask_lo, mask_hi, bit) {
+            let sparse_index = popcount_below(mask_lo, mask_hi, bit);
+
+            if is_leaf {
+                // The ray is at this voxel's entry face: t is the entry time and
+                // the axis last stepped across is the face it came through
+                hit.t = t;
+                hit.value = read_data_u8(data, ptr + sparse_index);
+                hit.normal = face_normal(ray, axis);
+                hit.pos = [ix as u32, iy as u32, iz as u32];
+                return true;
+            }
+
+            // Descend. Only the stepped axis has been kept current since this
+            // level was entered, so refresh the low bits of the other two from
+            // where the ray actually is, kept within the cell being entered
+            let px = orig.x + t * dir.x;
+            let py = orig.y + t * dir.y;
+            let pz = orig.z + t * dir.z;
+            ix = (px as i32).clamp(min_x, min_x + cell - 1);
+            iy = (py as i32).clamp(min_y, min_y + cell - 1);
+            iz = (pz as i32).clamp(min_z, min_z + cell - 1);
+
+            stack[level as usize] = node_index;
+            level += 1;
+            node_index = ptr + sparse_index;
+            let node = read_node(nodes, node_index);
+            is_leaf = node.0;
+            ptr = node.1;
+            mask_lo = node.2;
+            mask_hi = node.3;
             continue;
         }
 
-        let sparse_index = popcount_below(mask_lo, mask_hi, bit);
+        // Empty cell: step to the neighbouring cell the ray leaves through
+        let bx = if pos_x { min_x + cell } else { min_x };
+        let by = if pos_y { min_y + cell } else { min_y };
+        let bz = if pos_z { min_z + cell } else { min_z };
+        let tx = (bx as F - orig.x) * inv_dx;
+        let ty = (by as F - orig.y) * inv_dy;
+        let tz = (bz as F - orig.z) * inv_dz;
 
-        if is_leaf {
-            // This node's children are data (voxels) — we found a hit
-            let value = read_data_u8(data, ptr + sparse_index);
-            let vox_x = ox + cx as F * cell_size;
-            let vox_y = oy + cy as F * cell_size;
-            let vox_z = oz + cz as F * cell_size;
-
-            // Compute entry t and face for this specific voxel cell
-            let (vt_enter, _, vface) = ray_aabb(
-                ray,
-                vox_x, vox_y, vox_z,
-                vox_x + cell_size, vox_y + cell_size, vox_z + cell_size,
-            );
-            let vt_enter = vt_enter.max(t_min);
-
-            hit.t = vt_enter;
-            hit.value = value;
-            hit.normal = face_normal(ray, vface);
-            hit.pos = [vox_x as u32, vox_y as u32, vox_z as u32];
-            return true;
+        let old;
+        let new;
+        if tx <= ty && tx <= tz {
+            t = tx;
+            axis = 0;
+            old = ix;
+            new = if pos_x { min_x + cell } else { min_x - 1 };
+            ix = new;
+        } else if ty <= tz {
+            t = ty;
+            axis = 1;
+            old = iy;
+            new = if pos_y { min_y + cell } else { min_y - 1 };
+            iy = new;
+        } else {
+            t = tz;
+            axis = 2;
+            old = iz;
+            new = if pos_z { min_z + cell } else { min_z - 1 };
+            iz = new;
         }
 
-        // Internal child node — descend with a new DDA
-        let child_node_index = ptr + sparse_index;
-        let (_, _, c_mask_lo, c_mask_hi) = read_node(nodes, child_node_index);
-
-        if (c_mask_lo == 0 && c_mask_hi == 0) || sp >= MAX_DEPTH {
-            continue;
+        if t >= t_exit {
+            return false;
         }
 
-        let child_ox = ox + cx as F * cell_size;
-        let child_oy = oy + cy as F * cell_size;
-        let child_oz = oz + cz as F * cell_size;
-
-        // Compute t_enter for the child node
-        let (child_t_enter, child_t_exit, _) = ray_aabb(
-            ray,
-            child_ox, child_oy, child_oz,
-            child_ox + cell_size, child_oy + cell_size, child_oz + cell_size,
-        );
-        let child_t_enter = child_t_enter.max(t_min);
-        let child_t_exit = child_t_exit.min(t_max);
-
-        let (child_is_leaf, _, _, _) = read_node(nodes, child_node_index);
-        let child_cell_size = if child_is_leaf { cell_size / 4.0 } else { cell_size / 4.0 };
-
-        init_dda(
-            orig, inv_dir, step_x, step_y, step_z,
-            child_ox, child_oy, child_oz,
-            child_cell_size, child_t_enter, child_t_exit,
-            &mut stack[sp],
-        );
-        stack[sp].node_index = child_node_index;
-        sp += 1;
+        // Which levels did that step leave? The node at level l covers the bits
+        // from 2 * (num_levels - l) up, so the highest changed bit says how far
+        // up the ray has gone. Past the root means out of the world.
+        let changed = (old ^ new) as u32;
+        let high_bit = 31 - changed.leading_zeros();
+        let deepest = num_levels as i32 - 1 - (high_bit >> 1) as i32;
+        if deepest < 0 {
+            return false;
+        }
+        if (deepest as u32) < level {
+            level = deepest as u32;
+            node_index = stack[level as usize];
+            let node = read_node(nodes, node_index);
+            is_leaf = node.0;
+            ptr = node.1;
+            mask_lo = node.2;
+            mask_hi = node.3;
+        }
     }
 
     false
@@ -621,5 +566,218 @@ mod tests {
         let ray = Ray::new(Vec3::new(-1.0, 5.0, 0.5), Vec3::new(1.0, 0.0, 0.0), 0.0);
         let (t_enter, t_exit, _) = ray_aabb(&ray, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
         assert!(t_enter >= t_exit);
+    }
+}
+
+#[cfg(test)]
+mod tree64_tests {
+    use gpu_prim::Ray;
+    use gpu_prim::Vec3;
+
+    use super::*;
+
+    const SIZE: u32 = 64;
+
+    fn is_menger(mut x: u32, mut y: u32, mut z: u32, size: u32) -> bool {
+        let mut s = size;
+        while s > 1 {
+            s /= 3;
+            let center = u32::from((x / s) % 3 == 1)
+                + u32::from((y / s) % 3 == 1)
+                + u32::from((z / s) % 3 == 1);
+            if center >= 2 {
+                return false;
+            }
+            x %= s;
+            y %= s;
+            z %= s;
+        }
+        true
+    }
+
+    /// A Menger sponge plus a few stray voxels, as a dense grid and a tree64.
+    fn scene() -> (Vec<u8>, Vec<u32>, Vec<u32>, u32, u32) {
+        let mut flat = vec![0u8; (SIZE * SIZE * SIZE) as usize];
+        let sponge = 27;
+        let offset = (SIZE - sponge) / 2;
+        for z in 0..sponge {
+            for y in 0..sponge {
+                for x in 0..sponge {
+                    if is_menger(x, y, z, sponge) {
+                        let i = (x + offset) + (y + offset) * SIZE + (z + offset) * SIZE * SIZE;
+                        flat[i as usize] = 3;
+                    }
+                }
+            }
+        }
+        for &(x, y, z, v) in &[
+            (0, 0, 0, 1u8),
+            (63, 63, 63, 2),
+            (5, 60, 7, 4),
+            (40, 2, 61, 1),
+        ] {
+            flat[(x + y * SIZE + z * SIZE * SIZE) as usize] = v;
+        }
+
+        let tree = voxel_tree64::Tree64::new((&flat[..], [SIZE; 3]));
+        let root = tree.root_state();
+        let nodes: Vec<u32> = bytemuck::cast_slice(&tree.nodes).to_vec();
+        let data: Vec<u32> = tree
+            .data
+            .chunks(4)
+            .map(|c| {
+                c.iter()
+                    .enumerate()
+                    .fold(0u32, |w, (i, &b)| w | ((b as u32) << (i * 8)))
+            })
+            .collect();
+        (flat, nodes, data, root.num_levels as u32, root.index)
+    }
+
+    /// Plain Amanatides-Woo over the dense grid, one voxel at a time.
+    fn reference(grid: &[u8], ray: &Ray, t_min: F, t_max: F) -> Option<(F, u32, Vec3, [u32; 3])> {
+        let size = SIZE as F;
+        let (t_enter, t_exit, mut axis) = ray_aabb(ray, 0.0, 0.0, 0.0, size, size, size);
+        let t_enter = t_enter.max(t_min);
+        let t_exit = t_exit.min(t_max);
+        if t_enter >= t_exit {
+            return None;
+        }
+        let o = ray.orig();
+        let d = ray.dir();
+        let p = o + t_enter * d;
+        let max = SIZE as i32 - 1;
+        let mut i = [
+            (p.x.floor() as i32).clamp(0, max),
+            (p.y.floor() as i32).clamp(0, max),
+            (p.z.floor() as i32).clamp(0, max),
+        ];
+        let dd = [d.x, d.y, d.z];
+        let oo = [o.x, o.y, o.z];
+        let mut t = t_enter;
+        loop {
+            let v = grid[(i[0] + i[1] * SIZE as i32 + i[2] * SIZE as i32 * SIZE as i32) as usize];
+            if v != 0 {
+                return Some((
+                    t,
+                    v as u32,
+                    face_normal(ray, axis),
+                    [i[0] as u32, i[1] as u32, i[2] as u32],
+                ));
+            }
+            let mut best = F::INFINITY;
+            let mut best_axis = 0;
+            for a in 0..3 {
+                if dd[a] == 0.0 {
+                    continue;
+                }
+                let b = if dd[a] > 0.0 { i[a] + 1 } else { i[a] };
+                let ta = (b as F - oo[a]) / dd[a];
+                if ta < best {
+                    best = ta;
+                    best_axis = a;
+                }
+            }
+            t = best;
+            axis = best_axis as u32;
+            i[best_axis] += if dd[best_axis] > 0.0 { 1 } else { -1 };
+            if t >= t_exit || i[best_axis] < 0 || i[best_axis] > max {
+                return None;
+            }
+        }
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn f(&mut self) -> F {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 40) as F) / (1u64 << 24) as F
+        }
+        fn range(&mut self, lo: F, hi: F) -> F {
+            lo + self.f() * (hi - lo)
+        }
+    }
+
+    #[test]
+    fn matches_dense_grid_reference() {
+        let (grid, nodes, data, levels, root) = scene();
+        let mut rng = Lcg(7);
+        let mut hits = 0;
+        for k in 0..20_000 {
+            // Half the rays start outside the world, half inside it
+            let orig = if k % 2 == 0 {
+                let u = Vec3::new(
+                    rng.range(-1.0, 1.0),
+                    rng.range(-1.0, 1.0),
+                    rng.range(-1.0, 1.0),
+                )
+                .normalize_or_zero();
+                Vec3::splat(32.0) + u * rng.range(60.0, 120.0)
+            } else {
+                Vec3::new(
+                    rng.range(0.0, 64.0),
+                    rng.range(0.0, 64.0),
+                    rng.range(0.0, 64.0),
+                )
+            };
+            let target = Vec3::new(
+                rng.range(0.0, 64.0),
+                rng.range(0.0, 64.0),
+                rng.range(0.0, 64.0),
+            );
+            let mut dir = (target - orig).normalize_or_zero();
+            if dir == Vec3::ZERO {
+                continue;
+            }
+            // Some axis-aligned rays, which are the degenerate case for DDA
+            if k % 7 == 0 {
+                dir = match k % 3 {
+                    0 => Vec3::new(dir.x.signum(), 0.0, 0.0),
+                    1 => Vec3::new(0.0, dir.y.signum(), 0.0),
+                    _ => Vec3::new(0.0, 0.0, dir.z.signum()),
+                };
+            }
+            let ray = Ray::new(orig, dir, 0.0);
+
+            let expected = reference(&grid, &ray, 0.001, 1000.0);
+            let mut hit = VoxelHit::default();
+            let found = trace_tree64(&nodes, &data, levels, root, &ray, 0.001, 1000.0, &mut hit);
+
+            match expected {
+                None => assert!(
+                    !found,
+                    "ray {k} {orig:?} {dir:?}: expected miss, hit {:?} t={}",
+                    hit.pos, hit.t
+                ),
+                Some((t, value, normal, pos)) => {
+                    hits += 1;
+                    assert!(
+                        found,
+                        "ray {k} {orig:?} {dir:?}: expected hit at {pos:?} t={t}, got miss"
+                    );
+                    // A ray skimming a voxel edge may legitimately land in a
+                    // neighbouring voxel of the same distance, so compare on t
+                    // and value, and only demand the same voxel when t agrees
+                    assert!((hit.t - t).abs() < 1e-3, "ray {k}: t {} vs {t}", hit.t);
+                    assert_eq!(hit.value, value, "ray {k}: value");
+                    if hit.pos != pos {
+                        assert!(
+                            (hit.t - t).abs() < 1e-4,
+                            "ray {k}: pos {:?} vs {pos:?}",
+                            hit.pos
+                        );
+                    } else {
+                        assert_eq!(hit.normal, normal, "ray {k}: normal");
+                    }
+                }
+            }
+        }
+        assert!(
+            hits > 5000,
+            "only {hits} rays hit; the test is not exercising much"
+        );
     }
 }

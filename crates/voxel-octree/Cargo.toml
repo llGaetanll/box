@@ -12,3 +12,7 @@ gpu-prim = { path = "../gpu-prim" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+voxel-tree64 = { path = "../voxel-tree64" }
+bytemuck = { workspace = true }
