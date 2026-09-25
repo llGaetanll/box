@@ -16,6 +16,7 @@ use winit::keyboard::NamedKey;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
 
+use crate::gpu::Accumulation;
 use crate::gpu::GpuContext;
 use crate::window_surface::WindowSurface;
 use crate::window_surface::WindowSurfaceBuilder;
@@ -38,11 +39,11 @@ pub struct LiveApp {
     window_surface: Option<WindowSurface>,
     config: Option<wgpu::SurfaceConfiguration>,
     render_pipeline: Option<wgpu::RenderPipeline>,
-    bind_group: Option<wgpu::BindGroup>,
     node_buffer: Option<wgpu::Buffer>,
     data_buffer: Option<wgpu::Buffer>,
-    accum_buffer: Option<wgpu::Buffer>,
-    accum_size: (u32, u32),
+    accumulation: Option<Accumulation>,
+    /// Paths traced per pixel per frame.
+    samples: u32,
     close_requested: bool,
     start: Instant,
     cursor_x: f32,
@@ -57,13 +58,13 @@ pub struct LiveApp {
     tree_depth: u32,
     tree_root: u32,
     frame_count: u32,
-    prev_cam_pos: Vec3,
-    prev_yaw: f32,
-    prev_pitch: f32,
+    /// The camera the last frame was drawn with, which the history buffer
+    /// holds the view from. `None` when that buffer holds nothing usable.
+    prev_camera: Option<(Vec3, Vec3, Vec3)>,
 }
 
 impl LiveApp {
-    pub fn new() -> Self {
+    pub fn new(samples: u32) -> Self {
         let cam_pos = Vec3::new(55.0, 45.0, 55.0);
         // Compute initial yaw/pitch to look toward the sponge center
         let target = Vec3::new(32.0, 32.0, 32.0);
@@ -76,11 +77,10 @@ impl LiveApp {
             window_surface: None,
             config: None,
             render_pipeline: None,
-            bind_group: None,
             node_buffer: None,
             data_buffer: None,
-            accum_buffer: None,
-            accum_size: (0, 0),
+            accumulation: None,
+            samples: samples.max(1),
             close_requested: false,
             start: Instant::now(),
             cursor_x: 0.0,
@@ -95,9 +95,7 @@ impl LiveApp {
             tree_depth: 0,
             tree_root: 0,
             frame_count: 0,
-            prev_cam_pos: cam_pos,
-            prev_yaw: yaw,
-            prev_pitch: pitch,
+            prev_camera: None,
         }
     }
 
@@ -274,8 +272,12 @@ impl LiveApp {
         let (nodes_u32, data_u32, tree_depth, tree_root) = Self::build_tree64();
         let node_buffer = gpu.create_storage_buffer(&nodes_u32);
         let data_buffer = gpu.create_storage_buffer(&data_u32);
-        let accum_buffer = gpu.create_accum_buffer(window_size.width, window_size.height);
-        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer, &accum_buffer);
+        let accumulation = gpu.create_accumulation(
+            &node_buffer,
+            &data_buffer,
+            window_size.width,
+            window_size.height,
+        );
 
         let swapchain_format = surface.get_capabilities(&gpu.adapter).formats[0];
 
@@ -297,11 +299,9 @@ impl LiveApp {
         self.window_surface = Some(window_surface);
         self.config = Some(config);
         self.render_pipeline = Some(render_pipeline);
-        self.bind_group = Some(bind_group);
         self.node_buffer = Some(node_buffer);
         self.data_buffer = Some(data_buffer);
-        self.accum_buffer = Some(accum_buffer);
-        self.accum_size = (window_size.width, window_size.height);
+        self.accumulation = Some(accumulation);
         self.start = Instant::now();
         self.tree_depth = tree_depth;
         self.tree_root = tree_root;
@@ -343,31 +343,25 @@ impl LiveApp {
         let cam_dir = self.cam_dir();
         let cam_vup = self.cam_vup();
 
-        // Recreate accumulation buffer if window was resized
-        if (current_size.width, current_size.height) != self.accum_size {
-            let accum_buffer = gpu.create_accum_buffer(current_size.width, current_size.height);
-            let bind_group = gpu.create_bind_group(
+        // Recreate accumulation buffers if window was resized. Their contents
+        // are laid out for one size, so the history is lost
+        let size = (current_size.width, current_size.height);
+        if self.accumulation.as_ref().map(|a| a.size) != Some(size) {
+            self.accumulation = Some(gpu.create_accumulation(
                 self.node_buffer.as_ref().unwrap(),
                 self.data_buffer.as_ref().unwrap(),
-                &accum_buffer,
-            );
-            self.accum_buffer = Some(accum_buffer);
-            self.bind_group = Some(bind_group);
-            self.accum_size = (current_size.width, current_size.height);
-            self.frame_count = 0;
+                size.0,
+                size.1,
+            ));
+            self.prev_camera = None;
         }
 
-        let camera_moved = self.cam_pos != self.prev_cam_pos
-            || self.yaw != self.prev_yaw
-            || self.pitch != self.prev_pitch;
-        if camera_moved {
-            self.frame_count = 0;
-        } else {
-            self.frame_count += 1;
-        }
-        self.prev_cam_pos = self.cam_pos;
-        self.prev_yaw = self.yaw;
-        self.prev_pitch = self.pitch;
+        let camera = (self.cam_pos, cam_dir, cam_vup);
+        let (history, prev) = match self.prev_camera {
+            None => (gpu_wire::HISTORY_NONE, camera),
+            Some(prev) if prev == camera => (gpu_wire::HISTORY_STILL, prev),
+            Some(prev) => (gpu_wire::HISTORY_MOVED, prev),
+        };
 
         let push_constants = gpu_wire::ShaderConstants {
             width: current_size.width,
@@ -381,7 +375,16 @@ impl LiveApp {
             tree_depth: self.tree_depth,
             tree_root: self.tree_root,
             frame_count: self.frame_count,
+            prev_cam_pos: prev.0.into(),
+            prev_cam_dir: prev.1.into(),
+            prev_cam_vup: prev.2.into(),
+            history,
+            samples: self.samples,
         };
+        self.frame_count = self.frame_count.wrapping_add(1);
+        self.prev_camera = Some(camera);
+
+        let accumulation = self.accumulation.as_mut().unwrap();
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -400,7 +403,7 @@ impl LiveApp {
             });
 
             rpass.set_pipeline(self.render_pipeline.as_ref().unwrap());
-            rpass.set_bind_group(0, self.bind_group.as_ref().unwrap(), &[]);
+            rpass.set_bind_group(0, accumulation.bind_group(), &[]);
             rpass.set_push_constants(
                 wgpu::ShaderStages::VERTEX_FRAGMENT,
                 0,
@@ -410,6 +413,7 @@ impl LiveApp {
         }
 
         gpu.queue.submit(Some(encoder.finish()));
+        accumulation.swap();
         frame.present();
     }
 }
@@ -493,8 +497,8 @@ impl ApplicationHandler for LiveApp {
     }
 }
 
-pub fn run_live() -> Result<(), Box<dyn Error>> {
+pub fn run_live(samples: u32) -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
-    let mut app = LiveApp::new();
+    let mut app = LiveApp::new(samples);
     event_loop.run_app(&mut app).map_err(Into::into)
 }

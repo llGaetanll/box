@@ -98,6 +98,16 @@ impl GpuContext {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -127,11 +137,13 @@ impl GpuContext {
             })
     }
 
-    /// Create a bind group for the tree64 node and data buffers plus accumulation buffer.
+    /// Create a bind group for the tree64 node and data buffers, the previous
+    /// frame's accumulation buffer to read, and this frame's to write.
     pub fn create_bind_group(
         &self,
         node_buffer: &wgpu::Buffer,
         data_buffer: &wgpu::Buffer,
+        history_buffer: &wgpu::Buffer,
         accum_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -148,6 +160,10 @@ impl GpuContext {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: history_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: accum_buffer.as_entire_binding(),
                 },
             ],
@@ -156,7 +172,8 @@ impl GpuContext {
 
     /// Create a storage buffer for accumulation (read-write, zero-initialized).
     pub fn create_accum_buffer(&self, width: u32, height: u32) -> wgpu::Buffer {
-        let size = (width * height * 4 * std::mem::size_of::<f32>() as u32) as u64;
+        let size =
+            (width * height * gpu_wire::PIXEL_WORDS) as u64 * std::mem::size_of::<u32>() as u64;
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("accum_buffer"),
             size,
@@ -165,6 +182,57 @@ impl GpuContext {
         })
     }
 
+    /// Two accumulation buffers and the bind groups that read one while
+    /// writing the other, alternated frame by frame so each frame can blend
+    /// into the previous one's result.
+    pub fn create_accumulation(
+        &self,
+        node_buffer: &wgpu::Buffer,
+        data_buffer: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> Accumulation {
+        let buffers = [
+            self.create_accum_buffer(width, height),
+            self.create_accum_buffer(width, height),
+        ];
+        let bind_groups = [
+            self.create_bind_group(node_buffer, data_buffer, &buffers[1], &buffers[0]),
+            self.create_bind_group(node_buffer, data_buffer, &buffers[0], &buffers[1]),
+        ];
+        Accumulation {
+            _buffers: buffers,
+            bind_groups,
+            size: (width, height),
+            writing: 0,
+        }
+    }
+}
+
+/// The pair of accumulation buffers a renderer alternates between. See
+/// `GpuContext::create_accumulation`.
+pub struct Accumulation {
+    _buffers: [wgpu::Buffer; 2],
+    bind_groups: [wgpu::BindGroup; 2],
+    pub size: (u32, u32),
+    /// Which buffer the next frame writes.
+    writing: usize,
+}
+
+impl Accumulation {
+    /// The bind group for the next frame: it reads the buffer the last frame
+    /// wrote and writes the other one.
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_groups[self.writing]
+    }
+
+    /// The frame has been recorded; the next one reads what it wrote.
+    pub fn swap(&mut self) {
+        self.writing ^= 1;
+    }
+}
+
+impl GpuContext {
     /// Create a render pipeline for the given texture format and fragment entry point.
     pub fn create_pipeline(
         &self,

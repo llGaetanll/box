@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Live) => live_app::run_live(),
+        Some(Commands::Live { samples }) => live_app::run_live(samples),
         Some(Commands::Bench {
             name: Some(name),
             headless,
@@ -62,6 +62,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }) => bench_app::run_all_benchmarks(headless, save_frames),
         Some(Commands::Chart) => run_chart(),
         Some(Commands::Stats) => stats::run_stats(),
-        None => live_app::run_live(),
+        None => live_app::run_live(1),
     }
 }

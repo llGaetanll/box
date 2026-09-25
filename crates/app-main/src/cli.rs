@@ -12,7 +12,12 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Open a window and render the scene live
-    Live,
+    Live {
+        /// Paths traced per pixel per frame. More is less noise per frame at
+        /// a proportionally higher cost.
+        #[arg(long, default_value_t = 1)]
+        samples: u32,
+    },
     /// Run benchmark with animated camera path
     Bench {
         /// Benchmark definition name (loads from bench/configs/<name>.toml).

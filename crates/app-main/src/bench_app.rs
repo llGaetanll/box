@@ -26,6 +26,7 @@ use winit::keyboard::NamedKey;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
 
+use crate::gpu::Accumulation;
 use crate::gpu::GpuContext;
 use crate::live_app::LiveApp;
 use crate::window_surface::WindowSurface;
@@ -40,8 +41,15 @@ pub struct BenchmarkFile {
     /// the window manager may hand back something else.
     pub width: u32,
     pub height: u32,
+    /// Paths traced per pixel per frame.
+    #[serde(default = "default_samples")]
+    pub samples: u32,
     pub position: Vec<[f32; 3]>,
     pub look_at: Vec<[f32; 3]>,
+}
+
+fn default_samples() -> u32 {
+    1
 }
 
 impl BenchmarkFile {
@@ -55,6 +63,9 @@ impl BenchmarkFile {
 
         if def.frame_count < 1 {
             return Err(format!("Benchmark {} needs at least 1 frame", name).into());
+        }
+        if def.samples < 1 {
+            return Err(format!("Benchmark {} needs at least 1 sample per pixel", name).into());
         }
         if def.position.len() < 4 {
             return Err(format!(
@@ -123,11 +134,12 @@ struct Session {
     render_pipeline: wgpu::RenderPipeline,
     node_buffer: wgpu::Buffer,
     data_buffer: wgpu::Buffer,
-    /// The shader writes one accumulation entry per pixel, so the buffer has to
-    /// match the size being drawn. Rebuilt along with the bind group whenever that
-    /// size changes.
-    bind_group: wgpu::BindGroup,
-    accum_size: (u32, u32),
+    /// The shader writes one accumulation entry per pixel, so the buffers have
+    /// to match the size being drawn. Rebuilt whenever that size changes.
+    accumulation: Accumulation,
+    /// The camera of the previous frame of the current benchmark, which the
+    /// history buffer holds the view from. `None` on its first frame.
+    prev_camera: Option<(Vec3, Vec3, Vec3)>,
     tree_depth: u32,
     tree_root: u32,
     current: QueuedBenchmark,
@@ -155,9 +167,12 @@ impl Session {
         let node_buffer = gpu.create_storage_buffer(&nodes_u32);
         let data_buffer = gpu.create_storage_buffer(&data_u32);
 
-        let accum_size = (current.def.width, current.def.height);
-        let accum_buffer = gpu.create_accum_buffer(accum_size.0, accum_size.1);
-        let bind_group = gpu.create_bind_group(&node_buffer, &data_buffer, &accum_buffer);
+        let accumulation = gpu.create_accumulation(
+            &node_buffer,
+            &data_buffer,
+            current.def.width,
+            current.def.height,
+        );
 
         log::info!(
             "Running benchmark '{}' (scene: {})",
@@ -173,8 +188,8 @@ impl Session {
             render_pipeline,
             node_buffer,
             data_buffer,
-            bind_group,
-            accum_size,
+            accumulation,
+            prev_camera: None,
             tree_depth,
             tree_root,
             current,
@@ -218,6 +233,7 @@ impl Session {
         self.render_pipeline = self.gpu.create_pipeline(self.format, &next.def.scene);
         self.camera_path = next.def.camera_path();
         self.frame_records.clear();
+        self.prev_camera = None;
         self.current = next;
 
         true
@@ -232,12 +248,11 @@ impl Session {
         width: u32,
         height: u32,
     ) {
-        if self.accum_size != (width, height) {
-            let accum_buffer = self.gpu.create_accum_buffer(width, height);
-            self.bind_group =
+        if self.accumulation.size != (width, height) {
+            self.accumulation =
                 self.gpu
-                    .create_bind_group(&self.node_buffer, &self.data_buffer, &accum_buffer);
-            self.accum_size = (width, height);
+                    .create_accumulation(&self.node_buffer, &self.data_buffer, width, height);
+            self.prev_camera = None;
         }
 
         let frame_index = self.frame_records.len() as u32;
@@ -249,6 +264,16 @@ impl Session {
         let cam_pos = pose.position;
         let cam_dir = pose.direction();
         let cam_vup = pose.up(Vec3::Y);
+
+        // The camera moves every frame, so each frame builds on the previous
+        // one's history by reprojection, as live mode does while moving
+        let camera = (cam_pos, cam_dir, cam_vup);
+        let (history, prev) = match self.prev_camera {
+            None => (gpu_wire::HISTORY_NONE, camera),
+            Some(prev) if prev == camera => (gpu_wire::HISTORY_STILL, prev),
+            Some(prev) => (gpu_wire::HISTORY_MOVED, prev),
+        };
+        self.prev_camera = Some(camera);
 
         let mut encoder = self
             .gpu
@@ -266,7 +291,12 @@ impl Session {
             cam_vup: cam_vup.into(),
             tree_depth: self.tree_depth,
             tree_root: self.tree_root,
-            frame_count: 0,
+            frame_count: frame_index,
+            prev_cam_pos: prev.0.into(),
+            prev_cam_dir: prev.1.into(),
+            prev_cam_vup: prev.2.into(),
+            history,
+            samples: self.current.def.samples,
         };
 
         {
@@ -286,7 +316,7 @@ impl Session {
             });
 
             rpass.set_pipeline(&self.render_pipeline);
-            rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.set_bind_group(0, self.accumulation.bind_group(), &[]);
             rpass.set_push_constants(
                 wgpu::ShaderStages::VERTEX_FRAGMENT,
                 0,
@@ -296,6 +326,7 @@ impl Session {
         }
 
         self.gpu.queue.submit(Some(encoder.finish()));
+        self.accumulation.swap();
 
         // Without vsync the CPU would otherwise race ahead and the elapsed time
         // would measure queue submission rather than the render itself
