@@ -47,8 +47,14 @@ impl GpuContext {
             required_features |= wgpu::Features::SPIRV_SHADER_PASSTHROUGH;
         }
 
+        // The accumulation buffers hold 32 bytes per pixel, which passes the
+        // default 128MiB binding limit at around 4 million pixels. Ask for
+        // what the adapter can actually do
+        let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_push_constant_size: 256,
+            max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+            max_buffer_size: adapter_limits.max_buffer_size,
             ..Default::default()
         };
 
