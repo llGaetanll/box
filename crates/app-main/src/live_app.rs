@@ -6,6 +6,8 @@ use glam::Quat;
 use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
+use winit::event::DeviceEvent;
+use winit::event::DeviceId;
 use winit::event::ElementState;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -52,8 +54,9 @@ pub struct LiveApp {
     yaw: f32,
     pitch: f32,
     keys_held: KeysHeld,
-    last_cursor_x: f32,
-    last_cursor_y: f32,
+    /// Raw mouse motion since the last frame. The pointer is grabbed, so its
+    /// window position stops at the edge while these deltas keep coming.
+    mouse_delta: (f32, f32),
     last_frame: Instant,
     tree_depth: u32,
     tree_root: u32,
@@ -89,8 +92,7 @@ impl LiveApp {
             yaw,
             pitch,
             keys_held: KeysHeld::default(),
-            last_cursor_x: 0.0,
-            last_cursor_y: 0.0,
+            mouse_delta: (0.0, 0.0),
             last_frame: Instant::now(),
             tree_depth: 0,
             tree_root: 0,
@@ -108,19 +110,7 @@ impl LiveApp {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        let first_frame = self.last_cursor_x == 0.0 && self.last_cursor_y == 0.0;
-        let mouse_dx = if first_frame {
-            0.0
-        } else {
-            self.cursor_x - self.last_cursor_x
-        };
-        let mouse_dy = if first_frame {
-            0.0
-        } else {
-            self.cursor_y - self.last_cursor_y
-        };
-        self.last_cursor_x = self.cursor_x;
-        self.last_cursor_y = self.cursor_y;
+        let (mouse_dx, mouse_dy) = std::mem::take(&mut self.mouse_delta);
 
         let sensitivity = 0.003;
         let half_pi = std::f32::consts::FRAC_PI_2 - 0.01;
@@ -256,12 +246,12 @@ impl LiveApp {
 
         let window = window_surface.borrow_window();
         window.set_cursor_visible(false);
-        // Try confined first, fall back to locked
+        // Try locked first, fall back to confined (X11 has no locked mode)
         if window
-            .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+            .set_cursor_grab(winit::window::CursorGrabMode::Locked)
             .is_err()
         {
-            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
         }
         let window_size = window_surface.borrow_window().inner_size();
         let surface = window_surface.borrow_surface();
@@ -485,6 +475,18 @@ impl ApplicationHandler for LiveApp {
             ws.borrow_window().request_redraw();
         }
         event_loop.set_control_flow(ControlFlow::Poll);
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.mouse_delta.0 += delta.0 as f32;
+            self.mouse_delta.1 += delta.1 as f32;
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
